@@ -1,0 +1,8 @@
+{
+  "name": "cross-platform-screenshot",
+  "version": "0.1.0",
+  "description": "Cross-platform screenshot tool with OpenGL ES rendering",
+  "dependencies": [
+    "angle"
+  ]
+}

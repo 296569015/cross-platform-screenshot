@@ -1,0 +1,33 @@
+# Build artifacts
+build/
+build-*/
+out/
+cmake-build-*/
+
+# IDE
+.vs/
+.vscode/
+*.sln
+*.vcxproj*
+*.user
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# ANGLE pre-built binaries (download separately, not in git)
+third_party/angle/bin/
+third_party/angle/lib/
+
+# Cat Cafe / AI tooling
+.cat-cafe/
+.codex/
+.gemini/
+
+# Compiled objects
+*.obj
+*.o
+*.pdb
+*.ilk
+*.exp
