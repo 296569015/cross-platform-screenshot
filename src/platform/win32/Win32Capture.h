@@ -23,18 +23,21 @@ public:
                       CaptureError& outError,
                       uint32_t timeoutMs = 100) override;
     void releaseFrame() override;
+    bool readFramePixels(std::vector<uint8_t>& outPixels,
+                         int& outWidth, int& outHeight) override;
     std::vector<MonitorInfo> enumerateMonitors() const override;
     void shutdown() override;
 
 private:
     bool initDxgiDuplication(int monitorIndex);
 
-    ID3D11Device*           d3dDevice_      = nullptr;
-    ID3D11DeviceContext*    d3dContext_      = nullptr;
-    IDXGIOutputDuplication* duplication_     = nullptr;
-    ID3D11Texture2D*        stagingTexture_ = nullptr;
-    bool                    ownsDevice_     = false;
-    bool                    frameAcquired_ = false;
+    ID3D11Device*           d3dDevice_       = nullptr;
+    ID3D11DeviceContext*    d3dContext_       = nullptr;
+    IDXGIOutputDuplication* duplication_      = nullptr;
+    ID3D11Texture2D*        stagingTexture_  = nullptr;
+    ID3D11Texture2D*        cpuTexture_      = nullptr;  // CPU-readable copy
+    bool                    ownsDevice_      = false;
+    bool                    frameAcquired_   = false;
     Size                    captureSize_;
 };
 

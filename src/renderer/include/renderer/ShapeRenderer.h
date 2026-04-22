@@ -37,10 +37,17 @@ public:
     void shutdown();
 
 private:
-    ShaderProgram shader_;
+    ShaderProgram shader_;      // flat shader (rects)
+    ShaderProgram aaShader_;    // antialiased shader (lines/arrows)
     uint32_t vao_ = 0;
     uint32_t vbo_ = 0;
+    uint32_t aaVao_ = 0;       // VAO for aa shader (pos + edgeDist)
+    uint32_t aaVbo_ = 0;
     float projection_[16] = {};
+
+    /// Draw triangles using the AA shader (vertices: x,y,edgeDist per vertex)
+    void drawAATriangles(const float* vertices, int vertexCount,
+                         platform::Color color);
 };
 
 } // namespace sst::renderer

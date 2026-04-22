@@ -2,6 +2,7 @@
 
 #include "PlatformTypes.h"
 #include <vector>
+#include <cstdint>
 
 namespace sst::platform {
 
@@ -34,6 +35,11 @@ public:
 
     /// Release the current frame back to the capture pipeline.
     virtual void releaseFrame() = 0;
+
+    /// Read the last captured frame as BGRA pixels into outPixels.
+    /// outPixels is resized to w*h*4 bytes. Returns true on success.
+    virtual bool readFramePixels(std::vector<uint8_t>& outPixels,
+                                 int& outWidth, int& outHeight) = 0;
 
     /// Query available monitors.
     virtual std::vector<MonitorInfo> enumerateMonitors() const = 0;

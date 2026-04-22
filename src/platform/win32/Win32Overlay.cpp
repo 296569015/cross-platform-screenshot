@@ -127,7 +127,28 @@ LRESULT CALLBACK Win32Overlay::wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp
 
 LRESULT Win32Overlay::handleMessage(UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
-    case WM_MOUSEMOVE:
+    case WM_MOUSEMOVE: {
+        if (!mouseCallback_) break;
+
+        // Coalesce mouse moves: skip if there's another WM_MOUSEMOVE queued
+        MSG peekMsg;
+        while (PeekMessage(&peekMsg, hwnd_, WM_MOUSEMOVE, WM_MOUSEMOVE, PM_NOREMOVE)) {
+            // There's a newer move — consume it and use its position instead
+            PeekMessage(&peekMsg, hwnd_, WM_MOUSEMOVE, WM_MOUSEMOVE, PM_REMOVE);
+            lp = peekMsg.lParam;
+            wp = peekMsg.wParam;
+        }
+
+        MouseEvent evt;
+        evt.position.x = static_cast<int16_t>(LOWORD(lp));
+        evt.position.y = static_cast<int16_t>(HIWORD(lp));
+        evt.type = MouseEvent::Type::Move;
+        if (wp & MK_SHIFT)   evt.modifiers |= static_cast<uint8_t>(KeyModifier::Shift);
+        if (wp & MK_CONTROL) evt.modifiers |= static_cast<uint8_t>(KeyModifier::Ctrl);
+        mouseCallback_(evt);
+        return 0;
+    }
+
     case WM_LBUTTONDOWN:
     case WM_LBUTTONUP:
     case WM_RBUTTONDOWN:
@@ -145,7 +166,6 @@ LRESULT Win32Overlay::handleMessage(UINT msg, WPARAM wp, LPARAM lp) {
         if (wp & MK_CONTROL) evt.modifiers |= static_cast<uint8_t>(KeyModifier::Ctrl);
 
         switch (msg) {
-        case WM_MOUSEMOVE:   evt.type = MouseEvent::Type::Move;    break;
         case WM_LBUTTONDOWN: evt.type = MouseEvent::Type::Press;   evt.button = MouseButton::Left;   break;
         case WM_LBUTTONUP:   evt.type = MouseEvent::Type::Release; evt.button = MouseButton::Left;   break;
         case WM_RBUTTONDOWN: evt.type = MouseEvent::Type::Press;   evt.button = MouseButton::Right;  break;

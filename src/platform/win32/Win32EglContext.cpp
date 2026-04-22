@@ -8,6 +8,7 @@
 
 #include <d3d11.h>
 #include <cassert>
+#include <cstdio>
 
 namespace sst::platform::win32 {
 
@@ -44,8 +45,22 @@ bool Win32EglContext::initialize(void* nativeWindowHandle) {
     if (!eglInitialize(static_cast<EGLDisplay>(eglDisplay_), &major, &minor))
         return false;
 
-    // Choose config with RGBA8 + depth
-    const EGLint configAttribs[] = {
+    // Choose config with RGBA8 + MSAA 4x for antialiasing
+    const EGLint configAttribsMSAA[] = {
+        EGL_RED_SIZE,       8,
+        EGL_GREEN_SIZE,     8,
+        EGL_BLUE_SIZE,      8,
+        EGL_ALPHA_SIZE,     8,
+        EGL_DEPTH_SIZE,     0,
+        EGL_STENCIL_SIZE,   0,
+        EGL_SAMPLE_BUFFERS, 1,
+        EGL_SAMPLES,        4,
+        EGL_RENDERABLE_TYPE, EGL_OPENGL_ES3_BIT,
+        EGL_NONE
+    };
+
+    // Fallback without MSAA in case driver doesn't support it
+    const EGLint configAttribsNoMSAA[] = {
         EGL_RED_SIZE,       8,
         EGL_GREEN_SIZE,     8,
         EGL_BLUE_SIZE,      8,
@@ -59,10 +74,18 @@ bool Win32EglContext::initialize(void* nativeWindowHandle) {
 
     EGLint numConfigs = 0;
     EGLConfig config;
+
+    // Try MSAA 4x first
     if (!eglChooseConfig(static_cast<EGLDisplay>(eglDisplay_),
-                         configAttribs, &config, 1, &numConfigs)
+                         configAttribsMSAA, &config, 1, &numConfigs)
         || numConfigs == 0) {
-        return false;
+        // Fallback: no MSAA
+        numConfigs = 0;
+        if (!eglChooseConfig(static_cast<EGLDisplay>(eglDisplay_),
+                             configAttribsNoMSAA, &config, 1, &numConfigs)
+            || numConfigs == 0) {
+            return false;
+        }
     }
     eglConfig_ = config;
 
@@ -97,6 +120,15 @@ bool Win32EglContext::initialize(void* nativeWindowHandle) {
         static_cast<EGLSurface>(eglSurface_),
         static_cast<EGLContext>(eglContext_)
     );
+
+    // Enable vsync — swapBuffers will block until next vblank
+    eglSwapInterval(static_cast<EGLDisplay>(eglDisplay_), 1);
+
+    // Log MSAA status
+    EGLint msaaSamples = 0;
+    eglGetConfigAttrib(static_cast<EGLDisplay>(eglDisplay_), config,
+                       EGL_SAMPLES, &msaaSamples);
+    std::printf("[egl] MSAA samples: %d\n", msaaSamples);
 
     // Retrieve ANGLE's internal D3D11 device for texture sharing
     EGLAttrib deviceAttrib;

@@ -28,9 +28,7 @@ bool Win32Capture::initialize(int monitorIndex) {
         D3D_FEATURE_LEVEL featureLevels[] = { D3D_FEATURE_LEVEL_11_0 };
         D3D_FEATURE_LEVEL featureLevel;
         UINT flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT;
-#ifdef _DEBUG
-        flags |= D3D11_CREATE_DEVICE_DEBUG;
-#endif
+
         HRESULT hr = D3D11CreateDevice(
             nullptr,
             D3D_DRIVER_TYPE_HARDWARE,
@@ -110,6 +108,13 @@ bool Win32Capture::acquireFrame(CapturedFrame& outFrame,
         frameAcquired_ = false;
     }
 
+    // DXGI Desktop Duplication only returns a frame when the desktop changes.
+    // Nudge the cursor to guarantee at least one changed pixel.
+    POINT cursorPos;
+    GetCursorPos(&cursorPos);
+    SetCursorPos(cursorPos.x + 1, cursorPos.y);
+    SetCursorPos(cursorPos.x, cursorPos.y);
+
     DXGI_OUTDUPL_FRAME_INFO frameInfo;
     ComPtr<IDXGIResource> resource;
     HRESULT hr = duplication_->AcquireNextFrame(timeoutMs, &frameInfo, &resource);
@@ -152,6 +157,59 @@ void Win32Capture::releaseFrame() {
         duplication_->ReleaseFrame();
         frameAcquired_ = false;
     }
+}
+
+bool Win32Capture::readFramePixels(std::vector<uint8_t>& outPixels,
+                                   int& outWidth, int& outHeight) {
+    if (!stagingTexture_ || !d3dDevice_ || !d3dContext_)
+        return false;
+
+    outWidth = captureSize_.w;
+    outHeight = captureSize_.h;
+
+    // Create a CPU-readable texture if we don't have one yet
+    if (!cpuTexture_) {
+        D3D11_TEXTURE2D_DESC desc = {};
+        desc.Width              = captureSize_.w;
+        desc.Height             = captureSize_.h;
+        desc.MipLevels          = 1;
+        desc.ArraySize          = 1;
+        desc.Format             = DXGI_FORMAT_B8G8R8A8_UNORM;
+        desc.SampleDesc.Count   = 1;
+        desc.Usage              = D3D11_USAGE_STAGING;
+        desc.CPUAccessFlags     = D3D11_CPU_ACCESS_READ;
+
+        HRESULT hr = d3dDevice_->CreateTexture2D(&desc, nullptr, &cpuTexture_);
+        if (FAILED(hr)) return false;
+    }
+
+    // Copy from GPU staging texture to CPU-readable texture
+    d3dContext_->CopyResource(cpuTexture_, stagingTexture_);
+
+    // Map and read pixels
+    D3D11_MAPPED_SUBRESOURCE mapped;
+    HRESULT hr = d3dContext_->Map(cpuTexture_, 0, D3D11_MAP_READ, 0, &mapped);
+    if (FAILED(hr)) return false;
+
+    // Output as RGBA (swap B and R channels from BGRA)
+    outPixels.resize(static_cast<size_t>(outWidth) * outHeight * 4);
+    const uint8_t* src = static_cast<const uint8_t*>(mapped.pData);
+    uint8_t* dst = outPixels.data();
+
+    for (int y = 0; y < outHeight; ++y) {
+        const uint8_t* row = src + y * mapped.RowPitch;
+        for (int x = 0; x < outWidth; ++x) {
+            dst[0] = row[2]; // R (from B)
+            dst[1] = row[1]; // G
+            dst[2] = row[0]; // B (from R)
+            dst[3] = row[3]; // A
+            dst += 4;
+            row += 4;
+        }
+    }
+
+    d3dContext_->Unmap(cpuTexture_, 0);
+    return true;
 }
 
 std::vector<MonitorInfo> Win32Capture::enumerateMonitors() const {
@@ -198,6 +256,10 @@ void Win32Capture::shutdown() {
     if (stagingTexture_) {
         stagingTexture_->Release();
         stagingTexture_ = nullptr;
+    }
+    if (cpuTexture_) {
+        cpuTexture_->Release();
+        cpuTexture_ = nullptr;
     }
     if (ownsDevice_) {
         if (d3dContext_) { d3dContext_->Release(); d3dContext_ = nullptr; }
