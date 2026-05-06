@@ -15,6 +15,7 @@
 #include <cstring>
 #include <cwchar>
 #include <cmath>
+#include <cstdlib>
 #include <vector>
 #include <thread>
 #include <chrono>
@@ -67,6 +68,159 @@ static constexpr int kLongTrailingCaptureDelayMs = 220;
 static constexpr int kLongMinCaptureIntervalMs = 90;
 static constexpr int kLongPreviewMargin = 72;
 static constexpr float kLongToolbarBtnSize = 40.f;
+
+#ifdef _WIN32
+namespace {
+
+bool envFlagEnabled(const char* name) {
+    const char* value = std::getenv(name);
+    return value != nullptr && value[0] != '\0' && value[0] != '0';
+}
+
+uint8_t colorByte(float value) {
+    return static_cast<uint8_t>(std::clamp(value, 0.0f, 255.0f));
+}
+
+COLORREF colorRef(platform::Color color) {
+    return RGB(colorByte(color.r), colorByte(color.g), colorByte(color.b));
+}
+
+void blendRect(std::vector<uint8_t>& bgra,
+               int width,
+               int height,
+               int x,
+               int y,
+               int w,
+               int h,
+               platform::Color color) {
+    if (width <= 0 || height <= 0 || bgra.empty()) {
+        return;
+    }
+
+    const int x0 = std::clamp(x, 0, width);
+    const int y0 = std::clamp(y, 0, height);
+    const int x1 = std::clamp(x + w, 0, width);
+    const int y1 = std::clamp(y + h, 0, height);
+    if (x1 <= x0 || y1 <= y0) {
+        return;
+    }
+
+    const int alpha = colorByte(color.a);
+    const int invAlpha = 255 - alpha;
+    const int r = colorByte(color.r);
+    const int g = colorByte(color.g);
+    const int b = colorByte(color.b);
+
+    for (int py = y0; py < y1; ++py) {
+        uint8_t* row = bgra.data() + static_cast<size_t>(py) * width * 4;
+        for (int px = x0; px < x1; ++px) {
+            uint8_t* p = row + px * 4;
+            p[0] = static_cast<uint8_t>((b * alpha + p[0] * invAlpha) / 255);
+            p[1] = static_cast<uint8_t>((g * alpha + p[1] * invAlpha) / 255);
+            p[2] = static_cast<uint8_t>((r * alpha + p[2] * invAlpha) / 255);
+        }
+    }
+}
+
+void drawGdiLine(HDC dc,
+                 float x0,
+                 float y0,
+                 float x1,
+                 float y1,
+                 platform::Color color,
+                 float thickness) {
+    HPEN pen = CreatePen(PS_SOLID,
+                         std::max(1, static_cast<int>(std::round(thickness))),
+                         colorRef(color));
+    HGDIOBJ oldPen = SelectObject(dc, pen);
+    MoveToEx(dc, static_cast<int>(std::round(x0)), static_cast<int>(std::round(y0)), nullptr);
+    LineTo(dc, static_cast<int>(std::round(x1)), static_cast<int>(std::round(y1)));
+    SelectObject(dc, oldPen);
+    DeleteObject(pen);
+}
+
+void drawGdiRectOutline(HDC dc,
+                        float x,
+                        float y,
+                        float w,
+                        float h,
+                        platform::Color color,
+                        float thickness) {
+    HPEN pen = CreatePen(PS_SOLID,
+                         std::max(1, static_cast<int>(std::round(thickness))),
+                         colorRef(color));
+    HGDIOBJ oldPen = SelectObject(dc, pen);
+    HGDIOBJ oldBrush = SelectObject(dc, GetStockObject(NULL_BRUSH));
+    Rectangle(dc,
+              static_cast<int>(std::round(x)),
+              static_cast<int>(std::round(y)),
+              static_cast<int>(std::round(x + w)),
+              static_cast<int>(std::round(y + h)));
+    SelectObject(dc, oldBrush);
+    SelectObject(dc, oldPen);
+    DeleteObject(pen);
+}
+
+void drawGdiRectFilled(HDC dc,
+                       float x,
+                       float y,
+                       float w,
+                       float h,
+                       platform::Color color) {
+    HBRUSH brush = CreateSolidBrush(colorRef(color));
+    RECT rect = {
+        static_cast<LONG>(std::round(x)),
+        static_cast<LONG>(std::round(y)),
+        static_cast<LONG>(std::round(x + w)),
+        static_cast<LONG>(std::round(y + h))
+    };
+    FillRect(dc, &rect, brush);
+    DeleteObject(brush);
+}
+
+void drawGdiArrow(HDC dc,
+                  float x0,
+                  float y0,
+                  float x1,
+                  float y1,
+                  platform::Color color,
+                  float thickness,
+                  float headSize) {
+    drawGdiLine(dc, x0, y0, x1, y1, color, thickness);
+
+    const float dx = x1 - x0;
+    const float dy = y1 - y0;
+    const float len = std::sqrt(dx * dx + dy * dy);
+    if (len < 0.001f) {
+        return;
+    }
+
+    const float ux = dx / len;
+    const float uy = dy / len;
+    const float bx = x1 - ux * headSize;
+    const float by = y1 - uy * headSize;
+    const float px = -uy * headSize * 0.5f;
+    const float py = ux * headSize * 0.5f;
+
+    POINT pts[3] = {
+        { static_cast<LONG>(std::round(x1)), static_cast<LONG>(std::round(y1)) },
+        { static_cast<LONG>(std::round(bx + px)), static_cast<LONG>(std::round(by + py)) },
+        { static_cast<LONG>(std::round(bx - px)), static_cast<LONG>(std::round(by - py)) },
+    };
+
+    HBRUSH brush = CreateSolidBrush(colorRef(color));
+    HPEN pen = CreatePen(PS_SOLID, 1, colorRef(color));
+    HGDIOBJ oldBrush = SelectObject(dc, brush);
+    HGDIOBJ oldPen = SelectObject(dc, pen);
+    Polygon(dc, pts, 3);
+    SelectObject(dc, oldPen);
+    SelectObject(dc, oldBrush);
+    DeleteObject(pen);
+    DeleteObject(brush);
+}
+
+} // namespace
+#endif
 
 Application::Application() = default;
 
@@ -579,8 +733,8 @@ void Application::buildToolbar() {
         return;
     }
 
-    // 8 buttons: [Rect] [Arrow] [Line] [Long] | [Undo] [Save] [Copy] [Cancel]
-    int numButtons = 8;
+    // 9 buttons: [Rect] [Arrow] [Line] [Brush] [Long] | [Undo] [Save] [Copy] [Cancel]
+    int numButtons = 9;
     float totalW = kToolbarPad * 2 + numButtons * kBtnSize + (numButtons - 1) * kBtnGap;
     float totalH = kToolbarPad * 2 + kBtnSize;
 
@@ -614,6 +768,7 @@ void Application::buildToolbar() {
     addBtn(ToolButton::Type::Rectangle);
     addBtn(ToolButton::Type::Arrow);
     addBtn(ToolButton::Type::Line);
+    addBtn(ToolButton::Type::Freehand);
     addBtn(ToolButton::Type::LongScreenshot);
     addBtn(ToolButton::Type::Undo);
     addBtn(ToolButton::Type::Save);
@@ -649,6 +804,10 @@ void Application::onToolbarClick(ToolButton::Type type) {
     case ToolButton::Type::Line:
         activeTool_ = core::AnnotationTool::Line;
         std::printf("[toolbar] Tool: Line\n");
+        break;
+    case ToolButton::Type::Freehand:
+        activeTool_ = core::AnnotationTool::Freehand;
+        std::printf("[toolbar] Tool: Freehand\n");
         break;
     case ToolButton::Type::LongScreenshot:
         pendingLongScreenshot_ = true;
@@ -692,10 +851,27 @@ void Application::startAnnotation(float x, float y) {
     isDrawingAnnotation_ = true;
     annStartX_ = x; annStartY_ = y;
     annCurrX_ = x;  annCurrY_ = y;
+    activeFreehandPoints_.clear();
+    if (activeTool_ == core::AnnotationTool::Freehand) {
+        activeFreehandPoints_.push_back({ x, y });
+    }
 }
 
 void Application::updateAnnotation(float x, float y) {
     annCurrX_ = x; annCurrY_ = y;
+    if (activeTool_ == core::AnnotationTool::Freehand) {
+        if (activeFreehandPoints_.empty()) {
+            activeFreehandPoints_.push_back({ x, y });
+            return;
+        }
+
+        const auto& last = activeFreehandPoints_.back();
+        const float dx = x - last.x;
+        const float dy = y - last.y;
+        if ((dx * dx + dy * dy) >= 1.0f) {
+            activeFreehandPoints_.push_back({ x, y });
+        }
+    }
 }
 
 void Application::finishAnnotation(float x, float y) {
@@ -704,7 +880,10 @@ void Application::finishAnnotation(float x, float y) {
 
     float dx = annCurrX_ - annStartX_;
     float dy = annCurrY_ - annStartY_;
-    if (std::abs(dx) < 3.f && std::abs(dy) < 3.f) return; // too small
+    if (activeTool_ != core::AnnotationTool::Freehand &&
+        std::abs(dx) < 3.f && std::abs(dy) < 3.f) {
+        return; // too small
+    }
 
     core::Annotation ann;
 
@@ -731,6 +910,25 @@ void Application::finishAnnotation(float x, float y) {
             annotationColor_, annotationThickness_
         };
         break;
+    case core::AnnotationTool::Freehand: {
+        if (activeFreehandPoints_.empty()) {
+            activeFreehandPoints_.push_back({ annStartX_, annStartY_ });
+        }
+        const auto& last = activeFreehandPoints_.back();
+        if (std::abs(last.x - annCurrX_) >= 0.5f ||
+            std::abs(last.y - annCurrY_) >= 0.5f) {
+            activeFreehandPoints_.push_back({ annCurrX_, annCurrY_ });
+        }
+        if (activeFreehandPoints_.size() < 2) {
+            activeFreehandPoints_.clear();
+            return;
+        }
+        ann = core::FreehandAnnotation{
+            activeFreehandPoints_, annotationColor_, annotationThickness_
+        };
+        activeFreehandPoints_.clear();
+        break;
+    }
     default:
         return;
     }
@@ -745,11 +943,260 @@ void Application::finishAnnotation(float x, float y) {
 
     std::printf("[annotation] Added %s\n",
                 activeTool_ == core::AnnotationTool::Rectangle ? "rectangle" :
-                activeTool_ == core::AnnotationTool::Arrow ? "arrow" : "line");
+                activeTool_ == core::AnnotationTool::Arrow ? "arrow" :
+                activeTool_ == core::AnnotationTool::Line ? "line" : "freehand");
 }
+
+#ifdef _WIN32
+bool Application::shouldUseSoftwareOverlay() const {
+    return !envFlagEnabled("SST_GL_OVERLAY");
+}
+
+void Application::renderSoftwareOverlay() {
+    if (capturedPixels_.empty() || capturedW_ <= 0 || capturedH_ <= 0) {
+        return;
+    }
+
+    const int width = screenSize_.w;
+    const int height = screenSize_.h;
+    if (width <= 0 || height <= 0) {
+        return;
+    }
+
+    std::vector<uint8_t> bgra(static_cast<size_t>(width) * height * 4, 0);
+    const int copyW = std::min(width, capturedW_);
+    const int copyH = std::min(height, capturedH_);
+    for (int y = 0; y < copyH; ++y) {
+        const uint8_t* src = capturedPixels_.data() + static_cast<size_t>(y) * capturedW_ * 4;
+        uint8_t* dst = bgra.data() + static_cast<size_t>(y) * width * 4;
+        for (int x = 0; x < copyW; ++x) {
+            dst[x * 4 + 0] = src[x * 4 + 2];
+            dst[x * 4 + 1] = src[x * 4 + 1];
+            dst[x * 4 + 2] = src[x * 4 + 0];
+            dst[x * 4 + 3] = 255;
+        }
+    }
+
+    auto state = stateMachine_.currentState();
+    if (state == core::AppState::Selecting || state == core::AppState::Annotating) {
+        float sx = 0.f;
+        float sy = 0.f;
+        float sw = 0.f;
+        float sh = 0.f;
+        if (state == core::AppState::Selecting && isDragging_) {
+            const float x0 = std::min(dragStartX_, dragCurrX_);
+            const float y0 = std::min(dragStartY_, dragCurrY_);
+            const float x1 = std::max(dragStartX_, dragCurrX_);
+            const float y1 = std::max(dragStartY_, dragCurrY_);
+            sx = x0;
+            sy = y0;
+            sw = x1 - x0;
+            sh = y1 - y0;
+        } else if (state == core::AppState::Annotating) {
+            auto sel = stateMachine_.selectedRegion();
+            sx = static_cast<float>(sel.x);
+            sy = static_cast<float>(sel.y);
+            sw = static_cast<float>(sel.w);
+            sh = static_cast<float>(sel.h);
+        }
+
+        const int ix = static_cast<int>(std::round(sx));
+        const int iy = static_cast<int>(std::round(sy));
+        const int iw = static_cast<int>(std::round(sw));
+        const int ih = static_cast<int>(std::round(sh));
+        blendRect(bgra, width, height, 0, 0, width, iy, kDimColor);
+        blendRect(bgra, width, height, 0, iy + ih, width, height - (iy + ih), kDimColor);
+        blendRect(bgra, width, height, 0, iy, ix, ih, kDimColor);
+        blendRect(bgra, width, height, ix + iw, iy, width - (ix + iw), ih, kDimColor);
+    }
+
+    HWND hwnd = static_cast<HWND>(platform_.overlay->getNativeHandle());
+    if (!hwnd) {
+        return;
+    }
+
+    HDC windowDc = GetDC(hwnd);
+    HDC memDc = CreateCompatibleDC(windowDc);
+    BITMAPINFO bmi = {};
+    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bmi.bmiHeader.biWidth = width;
+    bmi.bmiHeader.biHeight = -height;
+    bmi.bmiHeader.biPlanes = 1;
+    bmi.bmiHeader.biBitCount = 32;
+    bmi.bmiHeader.biCompression = BI_RGB;
+
+    void* bits = nullptr;
+    HBITMAP bitmap = CreateDIBSection(windowDc, &bmi, DIB_RGB_COLORS, &bits, nullptr, 0);
+    if (!bitmap || !bits) {
+        if (bitmap) DeleteObject(bitmap);
+        DeleteDC(memDc);
+        ReleaseDC(hwnd, windowDc);
+        return;
+    }
+
+    std::memcpy(bits, bgra.data(), bgra.size());
+    HGDIOBJ oldBitmap = SelectObject(memDc, bitmap);
+
+    SetBkMode(memDc, TRANSPARENT);
+    if (state == core::AppState::Selecting) {
+        if (isDragging_) {
+            const float x0 = std::min(dragStartX_, dragCurrX_);
+            const float y0 = std::min(dragStartY_, dragCurrY_);
+            const float x1 = std::max(dragStartX_, dragCurrX_);
+            const float y1 = std::max(dragStartY_, dragCurrY_);
+            drawGdiRectOutline(memDc, x0, y0, x1 - x0, y1 - y0, kSelBorder, 2.0f);
+        }
+    } else if (state == core::AppState::Annotating) {
+        auto sel = stateMachine_.selectedRegion();
+        drawGdiRectOutline(memDc, static_cast<float>(sel.x), static_cast<float>(sel.y),
+                           static_cast<float>(sel.w), static_cast<float>(sel.h),
+                           kSelBorder, 2.0f);
+
+        auto drawAnnotation = [&](const core::Annotation& ann) {
+            std::visit([&](const auto& a) {
+                using T = std::decay_t<decltype(a)>;
+                if constexpr (std::is_same_v<T, core::RectAnnotation>) {
+                    if (a.filled) {
+                        drawGdiRectFilled(memDc, a.bounds.x, a.bounds.y,
+                                          a.bounds.w, a.bounds.h, a.color);
+                    } else {
+                        drawGdiRectOutline(memDc, a.bounds.x, a.bounds.y,
+                                           a.bounds.w, a.bounds.h,
+                                           a.color, a.thickness);
+                    }
+                } else if constexpr (std::is_same_v<T, core::ArrowAnnotation>) {
+                    drawGdiArrow(memDc, a.start.x, a.start.y, a.end.x, a.end.y,
+                                 a.color, a.thickness, a.headSize);
+                } else if constexpr (std::is_same_v<T, core::LineAnnotation>) {
+                    drawGdiLine(memDc, a.start.x, a.start.y, a.end.x, a.end.y,
+                                a.color, a.thickness);
+                } else if constexpr (std::is_same_v<T, core::FreehandAnnotation>) {
+                    for (size_t i = 1; i < a.points.size(); ++i) {
+                        drawGdiLine(memDc,
+                                    a.points[i - 1].x, a.points[i - 1].y,
+                                    a.points[i].x, a.points[i].y,
+                                    a.color, a.thickness);
+                    }
+                }
+            }, ann);
+        };
+
+        for (const auto& ann : annotations_.annotations()) {
+            drawAnnotation(ann);
+        }
+
+        if (isDrawingAnnotation_) {
+            switch (activeTool_) {
+            case core::AnnotationTool::Rectangle: {
+                const float rx = std::min(annStartX_, annCurrX_);
+                const float ry = std::min(annStartY_, annCurrY_);
+                drawGdiRectOutline(memDc, rx, ry,
+                                   std::abs(annCurrX_ - annStartX_),
+                                   std::abs(annCurrY_ - annStartY_),
+                                   annotationColor_, annotationThickness_);
+                break;
+            }
+            case core::AnnotationTool::Arrow:
+                drawGdiArrow(memDc, annStartX_, annStartY_, annCurrX_, annCurrY_,
+                             annotationColor_, annotationThickness_, 12.0f);
+                break;
+            case core::AnnotationTool::Line:
+                drawGdiLine(memDc, annStartX_, annStartY_, annCurrX_, annCurrY_,
+                            annotationColor_, annotationThickness_);
+                break;
+            case core::AnnotationTool::Freehand:
+                for (size_t i = 1; i < activeFreehandPoints_.size(); ++i) {
+                    drawGdiLine(memDc,
+                                activeFreehandPoints_[i - 1].x, activeFreehandPoints_[i - 1].y,
+                                activeFreehandPoints_[i].x, activeFreehandPoints_[i].y,
+                                annotationColor_, annotationThickness_);
+                }
+                break;
+            default:
+                break;
+            }
+        }
+
+        drawGdiRectFilled(memDc, toolbarX_, toolbarY_, toolbarW_, toolbarH_, kToolbarBg);
+        for (const auto& btn : toolButtons_) {
+            const bool isSelected =
+                (btn.type == ToolButton::Type::Rectangle && activeTool_ == core::AnnotationTool::Rectangle) ||
+                (btn.type == ToolButton::Type::Arrow && activeTool_ == core::AnnotationTool::Arrow) ||
+                (btn.type == ToolButton::Type::Line && activeTool_ == core::AnnotationTool::Line) ||
+                (btn.type == ToolButton::Type::Freehand && activeTool_ == core::AnnotationTool::Freehand);
+            if (isSelected) {
+                drawGdiRectFilled(memDc, btn.x, btn.y, btn.w, btn.h, kBtnSelected);
+            } else if (btn.isHovered) {
+                drawGdiRectFilled(memDc, btn.x, btn.y, btn.w, btn.h, kBtnHover);
+            }
+
+            const float cx = btn.x + btn.w * 0.5f;
+            const float cy = btn.y + btn.h * 0.5f;
+            const float p = 8.f;
+            switch (btn.type) {
+            case ToolButton::Type::Rectangle:
+                drawGdiRectOutline(memDc, btn.x + p, btn.y + p,
+                                   btn.w - p * 2, btn.h - p * 2, kBtnIcon, 2.0f);
+                break;
+            case ToolButton::Type::Arrow:
+                drawGdiArrow(memDc, btn.x + p, btn.y + p,
+                             btn.x + btn.w - p, btn.y + btn.h - p,
+                             kBtnIcon, 2.0f, 8.0f);
+                break;
+            case ToolButton::Type::Line:
+                drawGdiLine(memDc, btn.x + p, btn.y + btn.h - p,
+                            btn.x + btn.w - p, btn.y + p, kBtnIcon, 2.0f);
+                break;
+            case ToolButton::Type::Freehand:
+                drawGdiLine(memDc, btn.x + 7.f, btn.y + 21.f, btn.x + 12.f, btn.y + 14.f, kBtnIcon, 2.0f);
+                drawGdiLine(memDc, btn.x + 12.f, btn.y + 14.f, btn.x + 18.f, btn.y + 19.f, kBtnIcon, 2.0f);
+                drawGdiLine(memDc, btn.x + 18.f, btn.y + 19.f, btn.x + 25.f, btn.y + 10.f, kBtnIcon, 2.0f);
+                break;
+            case ToolButton::Type::LongScreenshot:
+                drawGdiLine(memDc, cx, btn.y + p, cx, btn.y + btn.h - p - 4, kBtnIcon, 2.0f);
+                drawGdiLine(memDc, cx, btn.y + btn.h - p, cx - 6, btn.y + btn.h - p - 6, kBtnIcon, 2.0f);
+                drawGdiLine(memDc, cx, btn.y + btn.h - p, cx + 6, btn.y + btn.h - p - 6, kBtnIcon, 2.0f);
+                break;
+            case ToolButton::Type::Undo:
+                drawGdiLine(memDc, cx, btn.y + p, btn.x + p, cy, kBtnIcon, 2.0f);
+                drawGdiLine(memDc, btn.x + p, cy, cx, btn.y + btn.h - p, kBtnIcon, 2.0f);
+                break;
+            case ToolButton::Type::Save:
+                drawGdiRectOutline(memDc, btn.x + p, btn.y + p, btn.w - p * 2, btn.h - p * 2, kBtnIcon, 2.0f);
+                drawGdiRectFilled(memDc, cx - 4, btn.y + btn.h - p - 6, 8, 6, kBtnIcon);
+                break;
+            case ToolButton::Type::Copy:
+                drawGdiRectOutline(memDc, btn.x + p, btn.y + p, btn.w - p * 2 - 4, btn.h - p * 2 - 4, kBtnIcon, 1.5f);
+                drawGdiRectOutline(memDc, btn.x + p + 4, btn.y + p + 4, btn.w - p * 2 - 4, btn.h - p * 2 - 4, kBtnIcon, 1.5f);
+                break;
+            case ToolButton::Type::Cancel:
+                drawGdiLine(memDc, btn.x + p, btn.y + p, btn.x + btn.w - p, btn.y + btn.h - p, kBtnIcon, 2.0f);
+                drawGdiLine(memDc, btn.x + btn.w - p, btn.y + p, btn.x + p, btn.y + btn.h - p, kBtnIcon, 2.0f);
+                break;
+            default:
+                break;
+            }
+        }
+    }
+
+    BitBlt(windowDc, 0, 0, width, height, memDc, 0, 0, SRCCOPY);
+
+    SelectObject(memDc, oldBitmap);
+    DeleteObject(bitmap);
+    DeleteDC(memDc);
+    ReleaseDC(hwnd, windowDc);
+}
+#endif
 
 // ── Render ──────────────────────────────────────────────────────
 void Application::render() {
+#ifdef _WIN32
+    if (shouldUseSoftwareOverlay()) {
+        renderSoftwareOverlay();
+        return;
+    }
+#endif
+
     platform_.eglContext->makeCurrent();
     auto size = platform_.eglContext->getSurfaceSize();
 
@@ -820,6 +1267,10 @@ void Application::render() {
                 shapeRenderer_.drawLine(annStartX_, annStartY_, annCurrX_, annCurrY_,
                                          annotationColor_, annotationThickness_);
                 break;
+            case core::AnnotationTool::Freehand:
+                shapeRenderer_.drawPolyline(activeFreehandPoints_,
+                                            annotationColor_, annotationThickness_);
+                break;
             default: break;
             }
         }
@@ -853,6 +1304,8 @@ void Application::renderAnnotations() {
                 shapeRenderer_.drawLine(a.start.x, a.start.y,
                                          a.end.x, a.end.y,
                                          a.color, a.thickness);
+            } else if constexpr (std::is_same_v<T, core::FreehandAnnotation>) {
+                shapeRenderer_.drawPolyline(a.points, a.color, a.thickness);
             } else if constexpr (std::is_same_v<T, core::TextAnnotation>) {
                 // TODO: SDF text rendering
             }
@@ -954,6 +1407,8 @@ void Application::renderToolbar() {
             activeTool_ == core::AnnotationTool::Arrow) isSelected = true;
         if (btn.type == ToolButton::Type::Line &&
             activeTool_ == core::AnnotationTool::Line) isSelected = true;
+        if (btn.type == ToolButton::Type::Freehand &&
+            activeTool_ == core::AnnotationTool::Freehand) isSelected = true;
 
         if (isSelected) {
             shapeRenderer_.drawRectFilled(btn.x, btn.y, btn.w, btn.h, kBtnSelected);
@@ -983,6 +1438,18 @@ void Application::renderToolbar() {
             // Diagonal line icon
             shapeRenderer_.drawLine(btn.x + iconPad, btn.y + btn.h - iconPad,
                                      btn.x + btn.w - iconPad, btn.y + iconPad,
+                                     kBtnIcon, 2.0f);
+            break;
+        case ToolButton::Type::Freehand:
+            // Freehand brush icon
+            shapeRenderer_.drawLine(btn.x + 7.f, btn.y + 21.f,
+                                     btn.x + 12.f, btn.y + 14.f,
+                                     kBtnIcon, 2.0f);
+            shapeRenderer_.drawLine(btn.x + 12.f, btn.y + 14.f,
+                                     btn.x + 18.f, btn.y + 19.f,
+                                     kBtnIcon, 2.0f);
+            shapeRenderer_.drawLine(btn.x + 18.f, btn.y + 19.f,
+                                     btn.x + 25.f, btn.y + 10.f,
                                      kBtnIcon, 2.0f);
             break;
         case ToolButton::Type::LongScreenshot:
@@ -1581,6 +2048,7 @@ void Application::resetCaptureSession() {
     commandHistory_.clear();
     isDragging_ = false;
     isDrawingAnnotation_ = false;
+    activeFreehandPoints_.clear();
     toolButtons_.clear();
 }
 

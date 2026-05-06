@@ -2,6 +2,7 @@
 /// No test framework dependency — uses simple assert-based checks.
 
 #include <core/ScreenshotStateMachine.h>
+#include <core/AnnotationModel.h>
 #include <core/LongScreenshotStitcher.h>
 #include <cassert>
 #include <algorithm>
@@ -156,6 +157,7 @@ void test_long_screenshot_stops_on_unreliable_overlap() {
     options.minOverlapRows = 2;
     options.maxOverlapRows = 7;
     options.minAppendRows = 1;
+    options.appendOnUnreliableMatch = false;
     LongScreenshotStitcher stitcher(width, options);
     stitcher.start(first, frameHeight);
     auto result = stitcher.append(unrelated, frameHeight);
@@ -164,6 +166,25 @@ void test_long_screenshot_stops_on_unreliable_overlap() {
     assert(!result.duplicate);
     assert(stitcher.height() == frameHeight);
     std::printf("  PASS: long screenshot stitcher stops on unreliable overlap\n");
+}
+
+void test_freehand_annotation_model_stores_points() {
+    AnnotationModel model;
+    FreehandAnnotation brush;
+    brush.points = { { 3.0f, 4.0f }, { 8.0f, 9.0f }, { 13.0f, 10.0f } };
+    brush.color = { 255, 68, 68, 255 };
+    brush.thickness = 3.0f;
+
+    model.addAnnotation(brush);
+
+    assert(model.count() == 1);
+    const auto* stored = std::get_if<FreehandAnnotation>(&model.annotations().front());
+    assert(stored != nullptr);
+    assert(stored->points.size() == 3);
+    assert(stored->points[0].x == 3.0f);
+    assert(stored->points[2].y == 10.0f);
+    assert(stored->thickness == 3.0f);
+    std::printf("  PASS: freehand annotation stores sampled points\n");
 }
 
 int main() {
@@ -179,6 +200,7 @@ int main() {
     test_long_screenshot_stitches_overlapping_frames();
     test_long_screenshot_detects_duplicate_frame();
     test_long_screenshot_stops_on_unreliable_overlap();
+    test_freehand_annotation_model_stores_points();
 
     std::printf("\nAll tests passed!\n");
     return 0;

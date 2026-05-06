@@ -11,10 +11,6 @@ namespace sst::platform::win32 {
 
 bool Win32Overlay::classRegistered_ = false;
 
-#ifndef WDA_EXCLUDEFROMCAPTURE
-#define WDA_EXCLUDEFROMCAPTURE 0x00000011
-#endif
-
 Win32Overlay::Win32Overlay() = default;
 
 Win32Overlay::~Win32Overlay() {
@@ -51,13 +47,11 @@ bool Win32Overlay::create(const Rect& bounds) {
 
     if (!hwnd_) return false;
 
-    if (!SetWindowDisplayAffinity(hwnd_, WDA_EXCLUDEFROMCAPTURE)) {
-        std::fprintf(stderr,
-                     "[overlay] SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE) failed: %lu\n",
-                     GetLastError());
-    } else {
-        std::printf("[overlay] Excluding overlay from screen capture\n");
-    }
+    // Keep the overlay capturable. Excluding it with SetWindowDisplayAffinity
+    // breaks remote-control viewers and other screenshot tools, which see a
+    // black fullscreen window instead of the composed overlay.
+    std::printf("[overlay] Capture affinity left at default\n");
+
 
     size_ = { bounds.w, bounds.h };
 

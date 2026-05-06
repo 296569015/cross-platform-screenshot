@@ -21,6 +21,7 @@ struct ToolButton {
         Rectangle,
         Arrow,
         Line,
+        Freehand,
         LongScreenshot,
         Edit,
         Undo,
@@ -47,6 +48,10 @@ private:
     void onMouseEvent(const platform::MouseEvent& evt);
     void onKeyEvent(const platform::KeyEvent& evt);
     void render();
+#ifdef _WIN32
+    bool shouldUseSoftwareOverlay() const;
+    void renderSoftwareOverlay();
+#endif
 
     // Phase 1: Capture and display
     bool captureScreen();
@@ -139,6 +144,7 @@ private:
     bool isDrawingAnnotation_ = false;
     float annStartX_ = 0.f, annStartY_ = 0.f;
     float annCurrX_  = 0.f, annCurrY_  = 0.f;
+    std::vector<platform::PointF> activeFreehandPoints_;
 
     // Pixel data for save (stored after capture for reuse)
     std::vector<uint8_t> capturedPixels_;

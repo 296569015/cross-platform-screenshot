@@ -229,6 +229,20 @@ void ShapeRenderer::drawLine(float x0, float y0, float x1, float y1,
     glBindVertexArray(0);
 }
 
+void ShapeRenderer::drawPolyline(const std::vector<platform::PointF>& points,
+                                 platform::Color color,
+                                 float thickness) {
+    if (points.size() < 2) {
+        return;
+    }
+
+    for (size_t i = 1; i < points.size(); ++i) {
+        drawLine(points[i - 1].x, points[i - 1].y,
+                 points[i].x, points[i].y,
+                 color, thickness);
+    }
+}
+
 void ShapeRenderer::drawArrow(float x0, float y0, float x1, float y1,
                               platform::Color color, float thickness,
                               float headSize) {

@@ -7,10 +7,24 @@
 #include <GLES2/gl2ext.h>
 
 #include <d3d11.h>
+#include <windows.h>
 #include <cassert>
+#include <cstdlib>
 #include <cstdio>
 
 namespace sst::platform::win32 {
+
+#ifndef EGL_PLATFORM_ANGLE_DEVICE_TYPE_D3D_WARP_ANGLE
+#define EGL_PLATFORM_ANGLE_DEVICE_TYPE_D3D_WARP_ANGLE 0x320B
+#endif
+
+#ifndef EGL_EXPERIMENTAL_PRESENT_PATH_ANGLE
+#define EGL_EXPERIMENTAL_PRESENT_PATH_ANGLE 0x33A4
+#endif
+
+#ifndef EGL_EXPERIMENTAL_PRESENT_PATH_COPY_ANGLE
+#define EGL_EXPERIMENTAL_PRESENT_PATH_COPY_ANGLE 0x33AA
+#endif
 
 Win32EglContext::Win32EglContext() = default;
 
@@ -25,21 +39,66 @@ bool Win32EglContext::initialize(void* nativeWindowHandle) {
             eglGetProcAddress("eglGetPlatformDisplayEXT"));
     if (!eglGetPlatformDisplayEXT) return false;
 
-    // Request ANGLE's D3D11 backend
-    const EGLint displayAttribs[] = {
-        EGL_PLATFORM_ANGLE_TYPE_ANGLE,
-        EGL_PLATFORM_ANGLE_TYPE_D3D11_ANGLE,
-        EGL_PLATFORM_ANGLE_DEVICE_TYPE_ANGLE,
-        EGL_PLATFORM_ANGLE_DEVICE_TYPE_HARDWARE_ANGLE,
-        EGL_NONE
+    auto envFlagEnabled = [](const char* name) {
+        const char* value = std::getenv(name);
+        return value != nullptr && value[0] != '\0' && value[0] != '0';
     };
 
-    eglDisplay_ = eglGetPlatformDisplayEXT(
-        EGL_PLATFORM_ANGLE_ANGLE,
-        EGL_DEFAULT_DISPLAY,
-        displayAttribs
-    );
+    const bool forceHardware = envFlagEnabled("SST_ANGLE_HARDWARE");
+    const bool useWarp =
+        !forceHardware &&
+        (GetSystemMetrics(SM_REMOTESESSION) != 0 ||
+         envFlagEnabled("SST_ANGLE_WARP") ||
+         envFlagEnabled("SST_REMOTE_COMPAT") ||
+         !envFlagEnabled("SST_DISABLE_REMOTE_COMPAT"));
+
+    auto getAngleDisplay = [&](EGLint deviceType, bool requestCopyPresent) {
+        const EGLint displayAttribsWithCopy[] = {
+            EGL_PLATFORM_ANGLE_TYPE_ANGLE,
+            EGL_PLATFORM_ANGLE_TYPE_D3D11_ANGLE,
+            EGL_PLATFORM_ANGLE_DEVICE_TYPE_ANGLE,
+            deviceType,
+            EGL_EXPERIMENTAL_PRESENT_PATH_ANGLE,
+            EGL_EXPERIMENTAL_PRESENT_PATH_COPY_ANGLE,
+            EGL_NONE
+        };
+        const EGLint displayAttribs[] = {
+            EGL_PLATFORM_ANGLE_TYPE_ANGLE,
+            EGL_PLATFORM_ANGLE_TYPE_D3D11_ANGLE,
+            EGL_PLATFORM_ANGLE_DEVICE_TYPE_ANGLE,
+            deviceType,
+            EGL_NONE
+        };
+
+        return eglGetPlatformDisplayEXT(
+            EGL_PLATFORM_ANGLE_ANGLE,
+            EGL_DEFAULT_DISPLAY,
+            requestCopyPresent ? displayAttribsWithCopy : displayAttribs
+        );
+    };
+
+    const EGLint preferredDevice =
+        useWarp ? EGL_PLATFORM_ANGLE_DEVICE_TYPE_D3D_WARP_ANGLE
+                : EGL_PLATFORM_ANGLE_DEVICE_TYPE_HARDWARE_ANGLE;
+    EGLint selectedDevice = preferredDevice;
+
+    eglDisplay_ = getAngleDisplay(preferredDevice, true);
+    bool requestedCopyPresent = true;
+    if (eglDisplay_ == EGL_NO_DISPLAY) {
+        requestedCopyPresent = false;
+        eglDisplay_ = getAngleDisplay(preferredDevice, false);
+    }
+    if (eglDisplay_ == EGL_NO_DISPLAY &&
+        preferredDevice != EGL_PLATFORM_ANGLE_DEVICE_TYPE_HARDWARE_ANGLE) {
+        requestedCopyPresent = true;
+        eglDisplay_ = getAngleDisplay(EGL_PLATFORM_ANGLE_DEVICE_TYPE_HARDWARE_ANGLE, true);
+        selectedDevice = EGL_PLATFORM_ANGLE_DEVICE_TYPE_HARDWARE_ANGLE;
+    }
     if (eglDisplay_ == EGL_NO_DISPLAY) return false;
+
+    std::printf("[egl] ANGLE D3D11 device: %s, present path: %s\n",
+                selectedDevice == EGL_PLATFORM_ANGLE_DEVICE_TYPE_D3D_WARP_ANGLE ? "WARP" : "hardware",
+                requestedCopyPresent ? "copy" : "default");
 
     EGLint major, minor;
     if (!eglInitialize(static_cast<EGLDisplay>(eglDisplay_), &major, &minor))

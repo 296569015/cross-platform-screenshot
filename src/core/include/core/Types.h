@@ -37,12 +37,19 @@ struct LineAnnotation {
     float            thickness = 2.0f;
 };
 
+struct FreehandAnnotation {
+    std::vector<platform::PointF> points;
+    platform::Color              color;
+    float                        thickness = 2.0f;
+};
+
 /// A single annotation (any type).
 using Annotation = std::variant<
     RectAnnotation,
     ArrowAnnotation,
     TextAnnotation,
-    LineAnnotation
+    LineAnnotation,
+    FreehandAnnotation
 >;
 
 /// The active annotation tool.
@@ -52,6 +59,7 @@ enum class AnnotationTool {
     Arrow,
     Text,
     Line,
+    Freehand,
 };
 
 } // namespace sst::core
