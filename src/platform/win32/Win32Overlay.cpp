@@ -3,6 +3,7 @@
 #include <dwmapi.h>
 #include <windowsx.h>
 #include <algorithm>
+#include <array>
 #include <cstdio>
 #include <utility>
 
@@ -311,18 +312,99 @@ LRESULT Win32Overlay::handleLowLevelMouse(int code, WPARAM wp, LPARAM lp) {
     return CallNextHookEx(mouseHook_, code, wp, lp);
 }
 
+void Win32Overlay::rememberMouseMovePoint(int clientX, int clientY, DWORD time) {
+    POINT screenPoint = { clientX, clientY };
+    ClientToScreen(hwnd_, &screenPoint);
+    lastMouseMoveScreen_ = screenPoint;
+    lastMouseMoveTime_ = time;
+    hasLastMouseMovePoint_ = true;
+}
+
+void Win32Overlay::dispatchMouseMoveWithHistory(WPARAM wp, LPARAM lp) {
+    if (!mouseCallback_) {
+        return;
+    }
+
+    const int clientX = GET_X_LPARAM(lp);
+    const int clientY = GET_Y_LPARAM(lp);
+    const DWORD messageTime = GetMessageTime();
+
+    MouseEvent baseEvent;
+    baseEvent.type = MouseEvent::Type::Move;
+    baseEvent.position.x = clientX;
+    baseEvent.position.y = clientY;
+    if (wp & MK_SHIFT)   baseEvent.modifiers |= static_cast<uint8_t>(KeyModifier::Shift);
+    if (wp & MK_CONTROL) baseEvent.modifiers |= static_cast<uint8_t>(KeyModifier::Ctrl);
+
+    if (!(wp & MK_LBUTTON) || !hasLastMouseMovePoint_ || !hasHandledDragMove_) {
+        mouseCallback_(baseEvent);
+        rememberMouseMovePoint(clientX, clientY, messageTime);
+        hasHandledDragMove_ = (wp & MK_LBUTTON) != 0;
+        return;
+    }
+
+    POINT screenPoint = { clientX, clientY };
+    ClientToScreen(hwnd_, &screenPoint);
+
+    MOUSEMOVEPOINT query = {};
+    query.x = screenPoint.x;
+    query.y = screenPoint.y;
+    query.time = messageTime;
+
+    std::array<MOUSEMOVEPOINT, 64> history = {};
+    const int count = GetMouseMovePointsEx(sizeof(MOUSEMOVEPOINT),
+                                           &query,
+                                           history.data(),
+                                           static_cast<int>(history.size()),
+                                           GMMP_USE_DISPLAY_POINTS);
+    if (count <= 0) {
+        mouseCallback_(baseEvent);
+        rememberMouseMovePoint(clientX, clientY, messageTime);
+        return;
+    }
+
+    std::vector<MOUSEMOVEPOINT> points;
+    points.reserve(static_cast<size_t>(count));
+    for (int i = 0; i < count; ++i) {
+        if (history[i].time < lastMouseMoveTime_) {
+            break;
+        }
+        const bool reachedLast =
+            history[i].time == lastMouseMoveTime_ &&
+            history[i].x == lastMouseMoveScreen_.x &&
+            history[i].y == lastMouseMoveScreen_.y;
+        if (reachedLast) {
+            break;
+        }
+        points.push_back(history[i]);
+    }
+
+    if (points.empty()) {
+        mouseCallback_(baseEvent);
+        rememberMouseMovePoint(clientX, clientY, messageTime);
+        return;
+    }
+
+    for (auto it = points.rbegin(); it != points.rend(); ++it) {
+        POINT clientPoint = { it->x, it->y };
+        ScreenToClient(hwnd_, &clientPoint);
+
+        MouseEvent evt = baseEvent;
+        evt.position.x = clientPoint.x;
+        evt.position.y = clientPoint.y;
+        mouseCallback_(evt);
+    }
+
+    lastMouseMoveScreen_ = screenPoint;
+    lastMouseMoveTime_ = messageTime;
+    hasLastMouseMovePoint_ = true;
+    hasHandledDragMove_ = true;
+}
+
 LRESULT Win32Overlay::handleMessage(UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
     case WM_MOUSEMOVE: {
-        if (!mouseCallback_) break;
-
-        MouseEvent evt;
-        evt.position.x = GET_X_LPARAM(lp);
-        evt.position.y = GET_Y_LPARAM(lp);
-        evt.type = MouseEvent::Type::Move;
-        if (wp & MK_SHIFT)   evt.modifiers |= static_cast<uint8_t>(KeyModifier::Shift);
-        if (wp & MK_CONTROL) evt.modifiers |= static_cast<uint8_t>(KeyModifier::Ctrl);
-        mouseCallback_(evt);
+        dispatchMouseMoveWithHistory(wp, lp);
         return 0;
     }
 
@@ -343,8 +425,22 @@ LRESULT Win32Overlay::handleMessage(UINT msg, WPARAM wp, LPARAM lp) {
         if (wp & MK_CONTROL) evt.modifiers |= static_cast<uint8_t>(KeyModifier::Ctrl);
 
         switch (msg) {
-        case WM_LBUTTONDOWN: evt.type = MouseEvent::Type::Press;   evt.button = MouseButton::Left;   break;
-        case WM_LBUTTONUP:   evt.type = MouseEvent::Type::Release; evt.button = MouseButton::Left;   break;
+        case WM_LBUTTONDOWN:
+            evt.type = MouseEvent::Type::Press;
+            evt.button = MouseButton::Left;
+            SetCapture(hwnd_);
+            rememberMouseMovePoint(evt.position.x, evt.position.y, GetMessageTime());
+            hasHandledDragMove_ = false;
+            break;
+        case WM_LBUTTONUP:
+            evt.type = MouseEvent::Type::Release;
+            evt.button = MouseButton::Left;
+            if (GetCapture() == hwnd_) {
+                ReleaseCapture();
+            }
+            hasLastMouseMovePoint_ = false;
+            hasHandledDragMove_ = false;
+            break;
         case WM_RBUTTONDOWN: evt.type = MouseEvent::Type::Press;   evt.button = MouseButton::Right;  break;
         case WM_RBUTTONUP:   evt.type = MouseEvent::Type::Release; evt.button = MouseButton::Right;  break;
         case WM_MBUTTONDOWN: evt.type = MouseEvent::Type::Press;   evt.button = MouseButton::Middle; break;

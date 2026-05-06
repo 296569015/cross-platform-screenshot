@@ -321,10 +321,39 @@ void ShapeRenderer::drawPolyline(const std::vector<platform::PointF>& points,
         return;
     }
 
+    std::vector<float> vertices;
+    vertices.reserve((points.size() - 1) * 18);
+
     for (size_t i = 1; i < points.size(); ++i) {
-        drawLine(points[i - 1].x, points[i - 1].y,
-                 points[i].x, points[i].y,
-                 color, thickness);
+        const float x0 = points[i - 1].x;
+        const float y0 = points[i - 1].y;
+        const float x1 = points[i].x;
+        const float y1 = points[i].y;
+        const float dx = x1 - x0;
+        const float dy = y1 - y0;
+        const float len = std::sqrt(dx * dx + dy * dy);
+        if (len < 0.001f) {
+            continue;
+        }
+
+        const float halfTotal = thickness * 0.5f + kFeatherPx;
+        const float nx = -dy / len;
+        const float ny =  dx / len;
+        const float ox = nx * halfTotal;
+        const float oy = ny * halfTotal;
+
+        vertices.insert(vertices.end(), {
+            x0 + ox, y0 + oy,  1.0f,
+            x0 - ox, y0 - oy, -1.0f,
+            x1 + ox, y1 + oy,  1.0f,
+            x1 + ox, y1 + oy,  1.0f,
+            x0 - ox, y0 - oy, -1.0f,
+            x1 - ox, y1 - oy, -1.0f,
+        });
+    }
+
+    if (!vertices.empty()) {
+        drawAATriangles(vertices.data(), static_cast<int>(vertices.size() / 3), color);
     }
 }
 

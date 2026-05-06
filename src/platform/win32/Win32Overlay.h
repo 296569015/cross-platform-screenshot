@@ -33,12 +33,18 @@ private:
     void applyWindowRegion();
     void updateMouseHook();
     bool pointInPassthroughRegion(int x, int y) const;
+    void dispatchMouseMoveWithHistory(WPARAM wp, LPARAM lp);
+    void rememberMouseMovePoint(int clientX, int clientY, DWORD time);
 
     HWND hwnd_ = nullptr;
     HHOOK mouseHook_ = nullptr;
     Size size_;
     float dpiScale_ = 1.0f;
     bool quitRequested_ = false;
+    bool hasLastMouseMovePoint_ = false;
+    bool hasHandledDragMove_ = false;
+    POINT lastMouseMoveScreen_ = {};
+    DWORD lastMouseMoveTime_ = 0;
     std::optional<Rect> passthroughRegion_;
     std::vector<Rect> overlayRegions_;
 

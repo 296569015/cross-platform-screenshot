@@ -99,6 +99,13 @@ private:
     bool saveToClipboard();
     bool saveToFile();
     std::vector<uint8_t> renderSelectionToPixels();
+    void renderAnnotationsToPixels(std::vector<uint8_t>& pixels,
+                                   int width,
+                                   int height,
+                                   float originX,
+                                   float originY,
+                                   float scaleX = 1.0f,
+                                   float scaleY = 1.0f) const;
     std::vector<uint8_t> cropPixels(const std::vector<uint8_t>& source,
                                     int sourceW, int sourceH,
                                     platform::Rect region) const;

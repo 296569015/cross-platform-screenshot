@@ -287,6 +287,58 @@ void appendFreehandPoint(std::vector<platform::PointF>& points, float x, float y
     }
 }
 
+std::vector<platform::PointF> smoothFreehandPoints(const std::vector<platform::PointF>& points) {
+    if (points.size() < 3) {
+        return points;
+    }
+
+    constexpr size_t kMaxSmoothSourcePoints = 2400;
+    constexpr size_t kMaxSmoothOutputPoints = 4096;
+    const int iterations = points.size() > 1200 ? 1 : 2;
+
+    std::vector<platform::PointF> current;
+    if (points.size() > kMaxSmoothSourcePoints) {
+        const size_t step = (points.size() + kMaxSmoothSourcePoints - 1) / kMaxSmoothSourcePoints;
+        current.reserve(kMaxSmoothSourcePoints + 1);
+        for (size_t i = 0; i < points.size(); i += step) {
+            current.push_back(points[i]);
+        }
+        if (current.back().x != points.back().x || current.back().y != points.back().y) {
+            current.push_back(points.back());
+        }
+    } else {
+        current = points;
+    }
+
+    for (int pass = 0; pass < iterations && current.size() >= 3; ++pass) {
+        if (current.size() * 2 > kMaxSmoothOutputPoints) {
+            break;
+        }
+
+        std::vector<platform::PointF> next;
+        next.reserve(current.size() * 2);
+        next.push_back(current.front());
+
+        for (size_t i = 0; i + 1 < current.size(); ++i) {
+            const auto& p0 = current[i];
+            const auto& p1 = current[i + 1];
+            next.push_back({
+                p0.x * 0.75f + p1.x * 0.25f,
+                p0.y * 0.75f + p1.y * 0.25f
+            });
+            next.push_back({
+                p0.x * 0.25f + p1.x * 0.75f,
+                p0.y * 0.25f + p1.y * 0.75f
+            });
+        }
+
+        next.push_back(current.back());
+        current = std::move(next);
+    }
+
+    return current;
+}
+
 void blendRect(std::vector<uint8_t>& bgra,
                int width,
                int height,
@@ -1350,7 +1402,7 @@ void Application::finishAnnotation(float x, float y) {
             return;
         }
         ann = core::FreehandAnnotation{
-            activeFreehandPoints_, annotationColor_, annotationThickness_
+            smoothFreehandPoints(activeFreehandPoints_), annotationColor_, annotationThickness_
         };
         activeFreehandPoints_.clear();
         break;
@@ -1920,7 +1972,7 @@ void Application::render() {
                                          annotationColor_, annotationThickness_);
                 break;
             case core::AnnotationTool::Freehand:
-                shapeRenderer_.drawPolyline(activeFreehandPoints_,
+                shapeRenderer_.drawPolyline(smoothFreehandPoints(activeFreehandPoints_),
                                             annotationColor_, annotationThickness_);
                 break;
             default: break;
@@ -3119,18 +3171,148 @@ void Application::resetCaptureSession() {
 
 std::vector<uint8_t> Application::renderSelectionToPixels() {
     if (isLongScreenshotResult_) {
-        return longStitcher_.pixels();
+        auto result = longStitcher_.pixels();
+        renderAnnotationsToPixels(result, capturedW_, capturedH_, 0.0f, 0.0f);
+        return result;
     }
 
     auto sel = stateMachine_.selectedRegion();
     auto result = cropPixels(capturedPixels_, capturedW_, capturedH_, sel);
-
-    // Draw annotations onto the pixel buffer
-    // For MVP, we render annotations by rendering to FBO and reading back.
-    // But that's complex — for now, return just the screenshot region.
-    // Annotations will be rendered in a future phase when FBO readback is wired.
+    renderAnnotationsToPixels(result,
+                              sel.w,
+                              sel.h,
+                              static_cast<float>(sel.x),
+                              static_cast<float>(sel.y));
 
     return result;
+}
+
+void Application::renderAnnotationsToPixels(std::vector<uint8_t>& pixels,
+                                            int width,
+                                            int height,
+                                            float originX,
+                                            float originY,
+                                            float scaleX,
+                                            float scaleY) const {
+    if (pixels.empty() ||
+        width <= 0 ||
+        height <= 0 ||
+        pixels.size() != static_cast<size_t>(width) * height * 4 ||
+        annotations_.count() == 0) {
+        return;
+    }
+
+#ifdef _WIN32
+    HDC screenDc = GetDC(nullptr);
+    if (!screenDc) {
+        return;
+    }
+    HDC memDc = CreateCompatibleDC(screenDc);
+    ReleaseDC(nullptr, screenDc);
+    if (!memDc) {
+        return;
+    }
+
+    BITMAPINFO bmi = {};
+    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bmi.bmiHeader.biWidth = width;
+    bmi.bmiHeader.biHeight = -height;
+    bmi.bmiHeader.biPlanes = 1;
+    bmi.bmiHeader.biBitCount = 32;
+    bmi.bmiHeader.biCompression = BI_RGB;
+
+    void* bits = nullptr;
+    HBITMAP bitmap = CreateDIBSection(memDc, &bmi, DIB_RGB_COLORS, &bits, nullptr, 0);
+    if (!bitmap || !bits) {
+        if (bitmap) {
+            DeleteObject(bitmap);
+        }
+        DeleteDC(memDc);
+        return;
+    }
+
+    HGDIOBJ oldBitmap = SelectObject(memDc, bitmap);
+    auto* bgra = static_cast<uint8_t*>(bits);
+    for (int y = 0; y < height; ++y) {
+        const uint8_t* src = pixels.data() + static_cast<size_t>(y) * width * 4;
+        uint8_t* dst = bgra + static_cast<size_t>(y) * width * 4;
+        for (int x = 0; x < width; ++x) {
+            dst[x * 4 + 0] = src[x * 4 + 2];
+            dst[x * 4 + 1] = src[x * 4 + 1];
+            dst[x * 4 + 2] = src[x * 4 + 0];
+            dst[x * 4 + 3] = src[x * 4 + 3];
+        }
+    }
+
+    auto tx = [originX, scaleX](float x) { return (x - originX) * scaleX; };
+    auto ty = [originY, scaleY](float y) { return (y - originY) * scaleY; };
+    const float thicknessScale = std::max(0.001f, (std::abs(scaleX) + std::abs(scaleY)) * 0.5f);
+
+    for (const auto& ann : annotations_.annotations()) {
+        std::visit([&](const auto& a) {
+            using T = std::decay_t<decltype(a)>;
+            if constexpr (std::is_same_v<T, core::RectAnnotation>) {
+                const float x = tx(a.bounds.x);
+                const float y = ty(a.bounds.y);
+                const float w = a.bounds.w * scaleX;
+                const float h = a.bounds.h * scaleY;
+                if (a.filled) {
+                    drawGdiRectFilled(memDc, x, y, w, h, a.color);
+                } else {
+                    drawGdiRectOutline(memDc, x, y, w, h, a.color,
+                                       a.thickness * thicknessScale);
+                }
+            } else if constexpr (std::is_same_v<T, core::ArrowAnnotation>) {
+                drawGdiArrow(memDc,
+                             tx(a.start.x),
+                             ty(a.start.y),
+                             tx(a.end.x),
+                             ty(a.end.y),
+                             a.color,
+                             a.thickness * thicknessScale,
+                             a.headSize * thicknessScale);
+            } else if constexpr (std::is_same_v<T, core::LineAnnotation>) {
+                drawGdiLine(memDc,
+                            tx(a.start.x),
+                            ty(a.start.y),
+                            tx(a.end.x),
+                            ty(a.end.y),
+                            a.color,
+                            a.thickness * thicknessScale);
+            } else if constexpr (std::is_same_v<T, core::FreehandAnnotation>) {
+                std::vector<platform::PointF> points;
+                points.reserve(a.points.size());
+                for (const auto& point : a.points) {
+                    points.push_back({ tx(point.x), ty(point.y) });
+                }
+                drawGdiPolyline(memDc, points, a.color, a.thickness * thicknessScale);
+            } else if constexpr (std::is_same_v<T, core::TextAnnotation>) {
+                // Text export will be implemented with the text tool.
+            }
+        }, ann);
+    }
+
+    GdiFlush();
+    for (int y = 0; y < height; ++y) {
+        const uint8_t* src = bgra + static_cast<size_t>(y) * width * 4;
+        uint8_t* dst = pixels.data() + static_cast<size_t>(y) * width * 4;
+        for (int x = 0; x < width; ++x) {
+            dst[x * 4 + 0] = src[x * 4 + 2];
+            dst[x * 4 + 1] = src[x * 4 + 1];
+            dst[x * 4 + 2] = src[x * 4 + 0];
+            dst[x * 4 + 3] = 255;
+        }
+    }
+
+    SelectObject(memDc, oldBitmap);
+    DeleteObject(bitmap);
+    DeleteDC(memDc);
+#else
+    (void)originX;
+    (void)originY;
+    (void)scaleX;
+    (void)scaleY;
+#endif
 }
 
 bool Application::saveToClipboard() {
