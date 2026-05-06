@@ -82,6 +82,12 @@ static constexpr int kLongCaptureDelayMs = 80;
 static constexpr int kLongNativePassthroughCaptureDelayMs = 45;
 static constexpr int kLongTrailingCaptureDelayMs = 200;
 static constexpr int kLongMinCaptureIntervalMs = 60;
+static constexpr int kLongAutoScrollIntervalMs = 55;
+static constexpr int kLongAutoCaptureDelayMs = 55;
+static constexpr int kLongAutoCaptureIntervalMs = 170;
+static constexpr int kLongAutoPreviewRenderIntervalMs = 360;
+static constexpr float kLongAutoScrollDelta = -0.5f;
+static constexpr int kLongAutoStopStallCaptures = 5;
 static constexpr int kLongPreviewMargin = 72;
 static constexpr float kLongToolbarBtnSize = 40.f;
 
@@ -989,7 +995,7 @@ void Application::buildToolbar() {
     auto sel = stateMachine_.selectedRegion();
 
     if (isLongScreenshotResult_) {
-        constexpr int numButtons = 4;
+        constexpr int numButtons = 5;
         const float totalW = numButtons * kLongToolbarBtnSize;
         const float totalH = kLongToolbarBtnSize;
         const auto anchor = longScreenshotSourceRegion_.w > 0 ? longScreenshotSourceRegion_ : sel;
@@ -1049,6 +1055,7 @@ void Application::buildToolbar() {
         };
 
         addBtn(ToolButton::Type::Edit);
+        addBtn(ToolButton::Type::AutoScroll);
         addBtn(ToolButton::Type::Save);
         addBtn(ToolButton::Type::Cancel);
         addBtn(ToolButton::Type::Confirm);
@@ -1134,6 +1141,9 @@ void Application::onToolbarClick(ToolButton::Type type) {
     case ToolButton::Type::LongScreenshot:
         pendingLongScreenshot_ = true;
         std::printf("[toolbar] Long screenshot requested\n");
+        break;
+    case ToolButton::Type::AutoScroll:
+        toggleLongAutoScroll();
         break;
     case ToolButton::Type::Undo:
         if (commandHistory_.canUndo()) {
@@ -1537,9 +1547,13 @@ void Application::renderSoftwareOverlay() {
                 (btn.type == ToolButton::Type::Rectangle && activeTool_ == core::AnnotationTool::Rectangle) ||
                 (btn.type == ToolButton::Type::Arrow && activeTool_ == core::AnnotationTool::Arrow) ||
                 (btn.type == ToolButton::Type::Line && activeTool_ == core::AnnotationTool::Line) ||
-                (btn.type == ToolButton::Type::Freehand && activeTool_ == core::AnnotationTool::Freehand);
+                (btn.type == ToolButton::Type::Freehand && activeTool_ == core::AnnotationTool::Freehand) ||
+                (btn.type == ToolButton::Type::AutoScroll && longAutoScrollActive_);
             if (isSelected) {
-                drawGdiRectFilled(memDc, btn.x, btn.y, btn.w, btn.h, kBtnSelected);
+                drawGdiRectFilled(memDc, btn.x, btn.y, btn.w, btn.h,
+                                  isLongScreenshotResult_
+                                      ? platform::Color{ 232, 245, 238, 255 }
+                                      : kBtnSelected);
             } else if (btn.isHovered) {
                 drawGdiRectFilled(memDc, btn.x, btn.y, btn.w, btn.h, kBtnHover);
             }
@@ -1550,6 +1564,7 @@ void Application::renderSoftwareOverlay() {
             const auto iconColor = isLongScreenshotResult_
                 ? (btn.type == ToolButton::Type::Cancel ? kLongCancel :
                    btn.type == ToolButton::Type::Confirm ? kLongConfirm :
+                   btn.type == ToolButton::Type::AutoScroll && longAutoScrollActive_ ? kLongCancel :
                    platform::Color{ 76, 82, 92, 255 })
                 : kBtnIcon;
             switch (btn.type) {
@@ -1582,6 +1597,15 @@ void Application::renderSoftwareOverlay() {
                 drawGdiLine(memDc, cx, btn.y + p, cx, btn.y + btn.h - p - 4, iconColor, 2.0f);
                 drawGdiLine(memDc, cx, btn.y + btn.h - p, cx - 6, btn.y + btn.h - p - 6, iconColor, 2.0f);
                 drawGdiLine(memDc, cx, btn.y + btn.h - p, cx + 6, btn.y + btn.h - p - 6, iconColor, 2.0f);
+                break;
+            case ToolButton::Type::AutoScroll:
+                if (longAutoScrollActive_) {
+                    drawGdiRectFilled(memDc, cx - 5.f, cy - 6.f, 10.f, 12.f, iconColor);
+                } else {
+                    drawGdiLine(memDc, cx - 5.f, cy - 8.f, cx - 5.f, cy + 8.f, iconColor, 2.0f);
+                    drawGdiLine(memDc, cx - 5.f, cy - 8.f, cx + 8.f, cy, iconColor, 2.0f);
+                    drawGdiLine(memDc, cx + 8.f, cy, cx - 5.f, cy + 8.f, iconColor, 2.0f);
+                }
                 break;
             case ToolButton::Type::Undo:
                 drawGdiLine(memDc, cx, btn.y + p, btn.x + p, cy, iconColor, 2.0f);
@@ -1897,6 +1921,22 @@ void Application::renderToolbar() {
                                      cx + 6, btn.y + btn.h - iconPad - 6,
                                      kBtnIcon, 2.0f);
             break;
+        case ToolButton::Type::AutoScroll:
+            if (longAutoScrollActive_) {
+                shapeRenderer_.drawRectFilled(cx - 5.f, cy - 6.f,
+                                              10.f, 12.f, kBtnIcon);
+            } else {
+                shapeRenderer_.drawLine(cx - 5.f, cy - 8.f,
+                                        cx - 5.f, cy + 8.f,
+                                        kBtnIcon, 2.0f);
+                shapeRenderer_.drawLine(cx - 5.f, cy - 8.f,
+                                        cx + 8.f, cy,
+                                        kBtnIcon, 2.0f);
+                shapeRenderer_.drawLine(cx + 8.f, cy,
+                                        cx - 5.f, cy + 8.f,
+                                        kBtnIcon, 2.0f);
+            }
+            break;
         case ToolButton::Type::Undo:
             // Curved arrow (approximate with < shape)
             shapeRenderer_.drawLine(cx, btn.y + iconPad, btn.x + iconPad, cy, kBtnIcon, 2.0f);
@@ -1939,7 +1979,11 @@ void Application::renderLongScreenshotToolbar() {
                                   toolbarW_, toolbarH_, kLongToolbar);
 
     for (const auto& btn : toolButtons_) {
-        if (btn.isHovered) {
+        if (btn.type == ToolButton::Type::AutoScroll && longAutoScrollActive_) {
+            shapeRenderer_.drawRectFilled(btn.x + 2.f, btn.y + 2.f,
+                                          btn.w - 4.f, btn.h - 4.f,
+                                          { 232, 245, 238, 255 });
+        } else if (btn.isHovered) {
             shapeRenderer_.drawRectFilled(btn.x + 2.f, btn.y + 2.f,
                                           btn.w - 4.f, btn.h - 4.f,
                                           { 232, 235, 240, 255 });
@@ -1950,6 +1994,7 @@ void Application::renderLongScreenshotToolbar() {
         const float iconPad = 11.f;
         const auto iconColor = btn.type == ToolButton::Type::Cancel ? kLongCancel :
                                btn.type == ToolButton::Type::Confirm ? kLongConfirm :
+                               btn.type == ToolButton::Type::AutoScroll && longAutoScrollActive_ ? kLongCancel :
                                platform::Color{ 76, 82, 92, 255 };
 
         switch (btn.type) {
@@ -1975,6 +2020,22 @@ void Application::renderLongScreenshotToolbar() {
             shapeRenderer_.drawLine(btn.x + iconPad, btn.y + btn.h - iconPad,
                                     btn.x + btn.w - iconPad, btn.y + btn.h - iconPad,
                                     iconColor, 2.0f);
+            break;
+        case ToolButton::Type::AutoScroll:
+            if (longAutoScrollActive_) {
+                shapeRenderer_.drawRectFilled(cx - 5.f, cy - 6.f,
+                                              10.f, 12.f, iconColor);
+            } else {
+                shapeRenderer_.drawLine(cx - 5.f, cy - 8.f,
+                                        cx - 5.f, cy + 8.f,
+                                        iconColor, 2.0f);
+                shapeRenderer_.drawLine(cx - 5.f, cy - 8.f,
+                                        cx + 8.f, cy,
+                                        iconColor, 2.0f);
+                shapeRenderer_.drawLine(cx + 8.f, cy,
+                                        cx - 5.f, cy + 8.f,
+                                        iconColor, 2.0f);
+            }
             break;
         case ToolButton::Type::Cancel:
             shapeRenderer_.drawLine(btn.x + iconPad, btn.y + iconPad,
@@ -2316,8 +2377,12 @@ bool Application::captureLongScreenshot() {
     isLongScreenshotResult_ = true;
     pendingLongFrameCapture_ = false;
     longNeedsTrailingFrameCapture_ = false;
+    longAutoScrollActive_ = false;
+    longAutoScrollStallCount_ = 0;
     longLastAppendedScrollSeq_ = 0;
     longLastFrameCapture_ = std::chrono::steady_clock::now();
+    longNextAutoScroll_ = longLastFrameCapture_;
+    longNextAutoPreviewRender_ = longLastFrameCapture_;
     longScreenshotSourceRegion_ = selected;
     annotations_.clear();
     commandHistory_.clear();
@@ -2334,6 +2399,32 @@ bool Application::captureLongScreenshot() {
     std::printf("[long] Entered manual long screenshot mode (%dx%d). Scroll to capture; click check to finish.\n",
                 capturedW_, capturedH_);
     return true;
+}
+
+std::chrono::steady_clock::time_point Application::scheduleLongFrameCapture(
+    uint64_t scrollSeq,
+    std::chrono::steady_clock::time_point scrollAt,
+    std::chrono::steady_clock::time_point now,
+    int captureDelayMs,
+    int trailingDelayMs,
+    int minCaptureIntervalMs) {
+    const auto requestedDue = now + std::chrono::milliseconds(captureDelayMs);
+    const auto trailingDue = now + std::chrono::milliseconds(trailingDelayMs);
+    const auto intervalDue = longLastFrameCapture_ +
+        std::chrono::milliseconds(minCaptureIntervalMs);
+    const auto nextDue = std::max(requestedDue, intervalDue);
+    const bool hadPendingCapture = pendingLongFrameCapture_;
+    const auto scheduledDue = hadPendingCapture
+        ? std::min(longFrameCaptureDue_, nextDue)
+        : nextDue;
+
+    longNeedsTrailingFrameCapture_ = true;
+    longTrailingFrameCaptureDue_ = trailingDue;
+    longPendingFrameScrollSeq_ = scrollSeq;
+    longPendingFrameScrollAt_ = scrollAt;
+    longFrameCaptureDue_ = scheduledDue;
+    pendingLongFrameCapture_ = true;
+    return scheduledDue;
 }
 
 void Application::handleLongScreenshotScroll(float scrollDelta,
@@ -2381,22 +2472,12 @@ void Application::handleLongScreenshotScroll(float scrollDelta,
     const int captureDelayMs = nativePassthrough
         ? kLongNativePassthroughCaptureDelayMs
         : kLongCaptureDelayMs;
-    const auto requestedDue = now + std::chrono::milliseconds(captureDelayMs);
-    const auto trailingDue = now + std::chrono::milliseconds(kLongTrailingCaptureDelayMs);
-    const auto intervalDue = longLastFrameCapture_ +
-        std::chrono::milliseconds(kLongMinCaptureIntervalMs);
-    const auto nextDue = std::max(requestedDue, intervalDue);
-    const bool hadPendingCapture = pendingLongFrameCapture_;
-    const auto scheduledDue = hadPendingCapture
-        ? std::min(longFrameCaptureDue_, nextDue)
-        : nextDue;
-
-    longNeedsTrailingFrameCapture_ = true;
-    longTrailingFrameCaptureDue_ = trailingDue;
-    longPendingFrameScrollSeq_ = scrollSeq;
-    longPendingFrameScrollAt_ = started;
-    longFrameCaptureDue_ = scheduledDue;
-    pendingLongFrameCapture_ = true;
+    const auto scheduledDue = scheduleLongFrameCapture(scrollSeq,
+                                                       started,
+                                                       now,
+                                                       captureDelayMs,
+                                                       kLongTrailingCaptureDelayMs,
+                                                       kLongMinCaptureIntervalMs);
     writeLongScreenshotLog("%s ok seq=%llu elapsed_ms=%lld delta=%d point=%d,%d cursor=%d,%d capture_due_ms=%lld trailing_due_ms=%d",
                            nativePassthrough ? "scroll-observed" : "scroll-forward",
                            static_cast<unsigned long long>(scrollSeq),
@@ -2537,6 +2618,115 @@ bool Application::appendLongScreenshotFrame() {
     return tryAppendFrame(framePixels, frameW, frameH, "hidden-overlay");
 }
 
+platform::Point Application::longScreenshotScrollPoint() const {
+    const auto region = longScreenshotSourceRegion_.w > 0 && longScreenshotSourceRegion_.h > 0
+        ? longScreenshotSourceRegion_
+        : stateMachine_.selectedRegion();
+    return {
+        region.x + region.w / 2,
+        region.y + region.h / 2
+    };
+}
+
+void Application::toggleLongAutoScroll() {
+    if (!isLongCaptureActive_) {
+        return;
+    }
+
+    if (longAutoScrollActive_) {
+        stopLongAutoScroll("user");
+        return;
+    }
+
+    longAutoScrollActive_ = true;
+    longAutoScrollStallCount_ = 0;
+    longNextAutoScroll_ = std::chrono::steady_clock::now();
+    longNextAutoPreviewRender_ = longNextAutoScroll_;
+    writeLongScreenshotLog("auto-scroll start interval_ms=%d capture_interval_ms=%d delta=%.2f",
+                           kLongAutoScrollIntervalMs,
+                           kLongAutoCaptureIntervalMs,
+                           kLongAutoScrollDelta);
+    buildToolbar();
+    platform_.overlay->setPassthroughRegion(longScreenshotSourceRegion_,
+                                            longScreenshotOverlayRegions());
+    render();
+}
+
+void Application::stopLongAutoScroll(const char* reason) {
+    if (!longAutoScrollActive_) {
+        return;
+    }
+
+    longAutoScrollActive_ = false;
+    longAutoScrollStallCount_ = 0;
+    writeLongScreenshotLog("auto-scroll stop reason=%s",
+                           reason ? reason : "unknown");
+    if (isLongCaptureActive_) {
+        buildToolbar();
+        platform_.overlay->setPassthroughRegion(longScreenshotSourceRegion_,
+                                                longScreenshotOverlayRegions());
+        render();
+    }
+}
+
+void Application::runLongAutoScroll() {
+    if (!longAutoScrollActive_) {
+        return;
+    }
+
+    if (!isLongCaptureActive_ ||
+        stateMachine_.currentState() != core::AppState::Annotating) {
+        longAutoScrollActive_ = false;
+        longAutoScrollStallCount_ = 0;
+        return;
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    if (now < longNextAutoScroll_) {
+        return;
+    }
+
+    const auto localPoint = longScreenshotScrollPoint();
+    const platform::Point screenPoint = {
+        screenBounds_.x + localPoint.x,
+        screenBounds_.y + localPoint.y
+    };
+    const int wheelDelta = static_cast<int>(kLongAutoScrollDelta * 120.0f);
+    if (wheelDelta >= 0 ||
+        !platform_.input->scrollAt(screenPoint,
+                                   wheelDelta,
+                                   platform_.overlay->getNativeHandle())) {
+        ++longAutoScrollStallCount_;
+        writeLongScreenshotLog("auto-scroll stall count=%d reason=scroll-forward-failed delta=%d point=%d,%d",
+                               longAutoScrollStallCount_,
+                               wheelDelta,
+                               screenPoint.x,
+                               screenPoint.y);
+        if (longAutoScrollStallCount_ >= kLongAutoStopStallCaptures) {
+            stopLongAutoScroll("scroll-forward-failed");
+        } else {
+            longNextAutoScroll_ = now + std::chrono::milliseconds(kLongAutoScrollIntervalMs);
+        }
+        return;
+    }
+
+    const uint64_t scrollSeq = ++longScrollEventSeq_;
+    const auto scheduledDue = scheduleLongFrameCapture(scrollSeq,
+                                                       now,
+                                                       now,
+                                                       kLongAutoCaptureDelayMs,
+                                                       kLongTrailingCaptureDelayMs,
+                                                       kLongAutoCaptureIntervalMs);
+    longNextAutoScroll_ = now + std::chrono::milliseconds(kLongAutoScrollIntervalMs);
+    writeLongScreenshotLog("auto-scroll step seq=%llu elapsed_ms=0 delta=%d point=%d,%d capture_due_ms=%lld next_scroll_ms=%d",
+                           static_cast<unsigned long long>(scrollSeq),
+                           wheelDelta,
+                           screenPoint.x,
+                           screenPoint.y,
+                           std::max(0LL, elapsedMs(now, scheduledDue)),
+                           kLongAutoScrollIntervalMs);
+}
+
 void Application::finishLongScreenshotMode() {
     if (!isLongCaptureActive_) {
         return;
@@ -2545,6 +2735,8 @@ void Application::finishLongScreenshotMode() {
     isLongCaptureActive_ = false;
     pendingLongFrameCapture_ = false;
     longNeedsTrailingFrameCapture_ = false;
+    longAutoScrollActive_ = false;
+    longAutoScrollStallCount_ = 0;
     platform_.overlay->setPassthroughRegion(std::nullopt);
     buildToolbar();
     std::printf("[long] Manual long screenshot finished (%dx%d)\n",
@@ -2564,6 +2756,8 @@ void Application::runPendingActions() {
         }
     }
 
+    runLongAutoScroll();
+
     if (!pendingLongFrameCapture_) {
         return;
     }
@@ -2580,17 +2774,19 @@ void Application::runPendingActions() {
     }
 
 #ifdef _WIN32
-    POINT cursor = {};
-    if (GetCursorPos(&cursor)) {
-        const float cx = static_cast<float>(cursor.x - screenBounds_.x);
-        const float cy = static_cast<float>(cursor.y - screenBounds_.y);
-        constexpr float toolbarGuard = 8.f;
-        if (cx >= toolbarX_ - toolbarGuard &&
-            cx <= toolbarX_ + toolbarW_ + toolbarGuard &&
-            cy >= toolbarY_ - toolbarGuard &&
-            cy <= toolbarY_ + toolbarH_ + toolbarGuard) {
-            longFrameCaptureDue_ = now + std::chrono::milliseconds(80);
-            return;
+    if (!longAutoScrollActive_) {
+        POINT cursor = {};
+        if (GetCursorPos(&cursor)) {
+            const float cx = static_cast<float>(cursor.x - screenBounds_.x);
+            const float cy = static_cast<float>(cursor.y - screenBounds_.y);
+            constexpr float toolbarGuard = 8.f;
+            if (cx >= toolbarX_ - toolbarGuard &&
+                cx <= toolbarX_ + toolbarW_ + toolbarGuard &&
+                cy >= toolbarY_ - toolbarGuard &&
+                cy <= toolbarY_ + toolbarH_ + toolbarGuard) {
+                longFrameCaptureDue_ = now + std::chrono::milliseconds(80);
+                return;
+            }
         }
     }
 #endif
@@ -2610,24 +2806,61 @@ void Application::runPendingActions() {
                            scheduleTrailingCapture);
     const bool appended = appendLongScreenshotFrame();
     if (appended) {
-        const auto renderStarted = std::chrono::steady_clock::now();
-        render();
-        writeLongScreenshotLog("render-after-append seq=%llu event_to_render_ms=%lld render_ms=%lld",
-                               static_cast<unsigned long long>(scrollSeq),
-                               scrollSeq ? elapsedMs(scrollAt) : -1,
-                               elapsedMs(renderStarted));
+        if (longAutoScrollActive_) {
+            longAutoScrollStallCount_ = 0;
+        }
+        const auto renderCheck = std::chrono::steady_clock::now();
+        const bool shouldRenderPreview = !longAutoScrollActive_ ||
+            renderCheck >= longNextAutoPreviewRender_;
+        if (shouldRenderPreview) {
+            if (longAutoScrollActive_) {
+                longNextAutoPreviewRender_ = renderCheck +
+                    std::chrono::milliseconds(kLongAutoPreviewRenderIntervalMs);
+            }
+            const auto renderStarted = std::chrono::steady_clock::now();
+            render();
+            writeLongScreenshotLog("render-after-append seq=%llu event_to_render_ms=%lld render_ms=%lld",
+                                   static_cast<unsigned long long>(scrollSeq),
+                                   scrollSeq ? elapsedMs(scrollAt) : -1,
+                                   elapsedMs(renderStarted));
+        } else {
+            writeLongScreenshotLog("render-skip seq=%llu reason=auto-preview-throttle next_render_ms=%lld",
+                                   static_cast<unsigned long long>(scrollSeq),
+                                   std::max(0LL, elapsedMs(renderCheck, longNextAutoPreviewRender_)));
+        }
     }
 
     if (isLongCaptureActive_ && scheduleTrailingCapture && !appended) {
-        const auto afterCapture = std::chrono::steady_clock::now();
-        const auto requestedDue = afterCapture + std::chrono::milliseconds(kLongCaptureDelayMs);
-        const auto intervalDue = longLastFrameCapture_ +
-            std::chrono::milliseconds(kLongMinCaptureIntervalMs);
-        longFrameCaptureDue_ = std::max({ requestedDue, intervalDue, trailingDue });
-        pendingLongFrameCapture_ = true;
+        if (longAutoScrollActive_) {
+            ++longAutoScrollStallCount_;
+            writeLongScreenshotLog("auto-scroll stall seq=%llu count=%d reason=no-append-trailing-suppressed",
+                                   static_cast<unsigned long long>(scrollSeq),
+                                   longAutoScrollStallCount_);
+            if (longAutoScrollStallCount_ >= kLongAutoStopStallCaptures) {
+                stopLongAutoScroll("bottom-or-stalled");
+            }
+        } else {
+            const auto afterCapture = std::chrono::steady_clock::now();
+            const auto requestedDue = afterCapture + std::chrono::milliseconds(kLongCaptureDelayMs);
+            const auto intervalDue = longLastFrameCapture_ +
+                std::chrono::milliseconds(kLongMinCaptureIntervalMs);
+            longFrameCaptureDue_ = std::max({ requestedDue, intervalDue, trailingDue });
+            pendingLongFrameCapture_ = true;
+        }
     } else if (isLongCaptureActive_ && scheduleTrailingCapture && appended) {
         writeLongScreenshotLog("trailing-skip seq=%llu reason=already-appended",
                                static_cast<unsigned long long>(scrollSeq));
+    } else if (isLongCaptureActive_ && longAutoScrollActive_ && !appended) {
+        ++longAutoScrollStallCount_;
+        writeLongScreenshotLog("auto-scroll stall seq=%llu count=%d reason=no-append",
+                               static_cast<unsigned long long>(scrollSeq),
+                               longAutoScrollStallCount_);
+        if (longAutoScrollStallCount_ >= kLongAutoStopStallCaptures) {
+            stopLongAutoScroll("bottom-or-stalled");
+        } else {
+            longNextAutoScroll_ = std::chrono::steady_clock::now() +
+                std::chrono::milliseconds(kLongAutoScrollIntervalMs);
+        }
     }
 }
 
@@ -2652,6 +2885,8 @@ void Application::resetCaptureSession() {
     pendingLongScreenshot_ = false;
     pendingLongFrameCapture_ = false;
     longNeedsTrailingFrameCapture_ = false;
+    longAutoScrollActive_ = false;
+    longAutoScrollStallCount_ = 0;
     longScrollEventSeq_ = 0;
     longPendingFrameScrollSeq_ = 0;
     longCurrentFrameScrollSeq_ = 0;

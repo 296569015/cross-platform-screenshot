@@ -25,6 +25,7 @@ struct ToolButton {
         Freehand,
         LongScreenshot,
         Edit,
+        AutoScroll,
         Undo,
         Save,
         Copy,
@@ -105,12 +106,23 @@ private:
                                    int width,
                                    int height) const;
     bool captureLongScreenshot();
+    std::chrono::steady_clock::time_point scheduleLongFrameCapture(
+        uint64_t scrollSeq,
+        std::chrono::steady_clock::time_point scrollAt,
+        std::chrono::steady_clock::time_point now,
+        int captureDelayMs,
+        int trailingDelayMs,
+        int minCaptureIntervalMs);
     void handleLongScreenshotScroll(float scrollDelta,
                                     platform::Point cursorPosition,
                                     bool nativePassthrough);
     bool appendLongScreenshotFrame();
     void finishLongScreenshotMode();
     void runPendingActions();
+    void toggleLongAutoScroll();
+    void stopLongAutoScroll(const char* reason);
+    void runLongAutoScroll();
+    platform::Point longScreenshotScrollPoint() const;
     platform::Rect fitLongPreviewRect(int imageW, int imageH) const;
     std::vector<platform::Rect> longScreenshotOverlayRegions() const;
     bool ensureLongHintTexture();
@@ -164,6 +176,10 @@ private:
     bool pendingLongScreenshot_ = false;
     bool pendingLongFrameCapture_ = false;
     bool longNeedsTrailingFrameCapture_ = false;
+    bool longAutoScrollActive_ = false;
+    int longAutoScrollStallCount_ = 0;
+    std::chrono::steady_clock::time_point longNextAutoScroll_;
+    std::chrono::steady_clock::time_point longNextAutoPreviewRender_;
     std::chrono::steady_clock::time_point longFrameCaptureDue_;
     std::chrono::steady_clock::time_point longTrailingFrameCaptureDue_;
     std::chrono::steady_clock::time_point longLastFrameCapture_;
