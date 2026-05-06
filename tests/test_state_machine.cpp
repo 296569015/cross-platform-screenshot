@@ -39,6 +39,21 @@ std::vector<uint8_t> crop_rows(const std::vector<uint8_t>& source,
     return rows;
 }
 
+std::vector<uint8_t> make_repeating_source_image(int width, int height, int period) {
+    std::vector<uint8_t> pixels(static_cast<size_t>(width) * height * 4);
+    for (int y = 0; y < height; ++y) {
+        const int py = y % period;
+        for (int x = 0; x < width; ++x) {
+            size_t i = (static_cast<size_t>(y) * width + x) * 4;
+            pixels[i + 0] = static_cast<uint8_t>((py * 41 + x * 13) & 0xFF);
+            pixels[i + 1] = static_cast<uint8_t>((py * 73 + x * 5) & 0xFF);
+            pixels[i + 2] = static_cast<uint8_t>((py * 29 + x * 17) & 0xFF);
+            pixels[i + 3] = 255;
+        }
+    }
+    return pixels;
+}
+
 void test_initial_state() {
     ScreenshotStateMachine sm;
     assert(sm.currentState() == AppState::Idle);
@@ -116,12 +131,40 @@ void test_long_screenshot_stitches_overlapping_frames() {
     auto r2 = stitcher.append(crop_rows(source, width, 10, frameHeight), frameHeight);
 
     assert(r1.appended);
+    assert(r1.reliable);
     assert(r1.overlapRows == 3);
     assert(r2.appended);
+    assert(r2.reliable);
     assert(r2.overlapRows == 3);
     assert(stitcher.height() == sourceHeight);
     assert(stitcher.pixels() == source);
     std::printf("  PASS: long screenshot stitcher merges overlapping frames\n");
+}
+
+void test_long_screenshot_stitches_large_overlap_search_range() {
+    constexpr int width = 20;
+    constexpr int sourceHeight = 420;
+    constexpr int frameHeight = 260;
+    constexpr int scrollRows = 113;
+    auto source = make_source_image(width, sourceHeight);
+
+    LongScreenshotStitchOptions options;
+    options.minOverlapRows = 40;
+    options.maxOverlapRows = 240;
+    options.minAppendRows = 1;
+    options.reliableMatchScore = 0.0f;
+    LongScreenshotStitcher stitcher(width, options);
+
+    stitcher.start(crop_rows(source, width, 0, frameHeight), frameHeight);
+    auto result = stitcher.append(crop_rows(source, width, scrollRows, frameHeight),
+                                  frameHeight);
+
+    assert(result.appended);
+    assert(result.reliable);
+    assert(result.overlapRows == frameHeight - scrollRows);
+    assert(stitcher.height() == frameHeight + scrollRows);
+    assert(stitcher.pixels() == crop_rows(source, width, 0, stitcher.height()));
+    std::printf("  PASS: long screenshot stitcher handles large overlap search range\n");
 }
 
 void test_long_screenshot_detects_duplicate_frame() {
@@ -168,6 +211,33 @@ void test_long_screenshot_stops_on_unreliable_overlap() {
     std::printf("  PASS: long screenshot stitcher stops on unreliable overlap\n");
 }
 
+void test_long_screenshot_rejects_ambiguous_repeating_overlap() {
+    constexpr int width = 16;
+    constexpr int sourceHeight = 80;
+    constexpr int frameHeight = 40;
+    constexpr int scrollRows = 7;
+    auto source = make_repeating_source_image(width, sourceHeight, 4);
+
+    LongScreenshotStitchOptions options;
+    options.minOverlapRows = 12;
+    options.maxOverlapRows = 39;
+    options.minAppendRows = 1;
+    options.reliableMatchScore = 1.0f;
+    options.ambiguousScoreGap = 2.0f;
+    options.appendOnUnreliableMatch = false;
+    LongScreenshotStitcher stitcher(width, options);
+
+    stitcher.start(crop_rows(source, width, 0, frameHeight), frameHeight);
+    auto result = stitcher.append(crop_rows(source, width, scrollRows, frameHeight),
+                                  frameHeight);
+
+    assert(!result.appended);
+    assert(!result.duplicate);
+    assert(!result.reliable);
+    assert(stitcher.height() == frameHeight);
+    std::printf("  PASS: long screenshot stitcher rejects ambiguous repeating overlap\n");
+}
+
 void test_freehand_annotation_model_stores_points() {
     AnnotationModel model;
     FreehandAnnotation brush;
@@ -198,8 +268,10 @@ int main() {
     test_save_flow();
     test_invalid_transition_stays();
     test_long_screenshot_stitches_overlapping_frames();
+    test_long_screenshot_stitches_large_overlap_search_range();
     test_long_screenshot_detects_duplicate_frame();
     test_long_screenshot_stops_on_unreliable_overlap();
+    test_long_screenshot_rejects_ambiguous_repeating_overlap();
     test_freehand_annotation_model_stores_points();
 
     std::printf("\nAll tests passed!\n");

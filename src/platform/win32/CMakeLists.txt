@@ -26,4 +26,5 @@ target_compile_definitions(platform_win32 PRIVATE
     NOMINMAX
     UNICODE
     _UNICODE
+    SST_LOG_DIR="${CMAKE_SOURCE_DIR}/logs"
 )

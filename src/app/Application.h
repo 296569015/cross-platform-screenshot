@@ -163,6 +163,12 @@ private:
     std::chrono::steady_clock::time_point longFrameCaptureDue_;
     std::chrono::steady_clock::time_point longTrailingFrameCaptureDue_;
     std::chrono::steady_clock::time_point longLastFrameCapture_;
+    uint64_t longScrollEventSeq_ = 0;
+    uint64_t longPendingFrameScrollSeq_ = 0;
+    std::chrono::steady_clock::time_point longPendingFrameScrollAt_;
+    uint64_t longCurrentFrameScrollSeq_ = 0;
+    std::chrono::steady_clock::time_point longCurrentFrameScrollAt_;
+    uint64_t longLastAppendedScrollSeq_ = 0;
     platform::Rect longScreenshotSourceRegion_;
     core::LongScreenshotStitcher longStitcher_;
 

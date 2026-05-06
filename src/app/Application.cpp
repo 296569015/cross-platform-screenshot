@@ -16,6 +16,7 @@
 #include <cwchar>
 #include <cmath>
 #include <cstdlib>
+#include <cstdarg>
 #include <vector>
 #include <thread>
 #include <chrono>
@@ -36,6 +37,10 @@
 #ifndef PW_RENDERFULLCONTENT
 #define PW_RENDERFULLCONTENT 0x00000002
 #endif
+#endif
+
+#ifndef SST_LOG_DIR
+#define SST_LOG_DIR "logs"
 #endif
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
@@ -70,9 +75,9 @@ static const platform::Color kLongConfirm  = { 22, 185, 111, 255 };
 static constexpr int kLongMaxFrames = 18;
 static constexpr int kLongScrollNotches = 3;
 static constexpr int kLongMaxOutputHeight = 16000;
-static constexpr int kLongCaptureDelayMs = 65;
-static constexpr int kLongTrailingCaptureDelayMs = 220;
-static constexpr int kLongMinCaptureIntervalMs = 90;
+static constexpr int kLongCaptureDelayMs = 110;
+static constexpr int kLongTrailingCaptureDelayMs = 260;
+static constexpr int kLongMinCaptureIntervalMs = 120;
 static constexpr int kLongPreviewMargin = 72;
 static constexpr float kLongToolbarBtnSize = 40.f;
 
@@ -82,6 +87,42 @@ namespace {
 bool envFlagEnabled(const char* name) {
     const char* value = std::getenv(name);
     return value != nullptr && value[0] != '\0' && value[0] != '0';
+}
+
+long long elapsedMs(std::chrono::steady_clock::time_point start,
+                    std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now()) {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+}
+
+void writeLongScreenshotLog(const char* format, ...) {
+    CreateDirectoryA(SST_LOG_DIR, nullptr);
+
+    char path[MAX_PATH] = {};
+    std::snprintf(path, sizeof(path), "%s/long-screenshot.log", SST_LOG_DIR);
+
+    FILE* file = nullptr;
+    if (fopen_s(&file, path, "ab") != 0 || !file) {
+        return;
+    }
+
+    SYSTEMTIME now = {};
+    GetLocalTime(&now);
+    std::fprintf(file,
+                 "%04u-%02u-%02u %02u:%02u:%02u.%03u ",
+                 now.wYear,
+                 now.wMonth,
+                 now.wDay,
+                 now.wHour,
+                 now.wMinute,
+                 now.wSecond,
+                 now.wMilliseconds);
+
+    va_list args;
+    va_start(args, format);
+    std::vfprintf(file, format, args);
+    va_end(args);
+    std::fputc('\n', file);
+    std::fclose(file);
 }
 
 uint8_t colorByte(float value) {
@@ -572,6 +613,9 @@ bool Application::captureLongFramePixelsFromCoveredWindow(std::vector<uint8_t>& 
                                                           int& outW,
                                                           int& outH,
                                                           platform::Rect region) {
+    const auto started = std::chrono::steady_clock::now();
+    const uint64_t scrollSeq = longCurrentFrameScrollSeq_;
+    const auto scrollAt = longCurrentFrameScrollAt_;
     HWND overlayHwnd = static_cast<HWND>(platform_.overlay->getNativeHandle());
     const POINT screenPoint = {
         screenBounds_.x + region.x + region.w / 2,
@@ -606,16 +650,28 @@ bool Application::captureLongFramePixelsFromCoveredWindow(std::vector<uint8_t>& 
     }
 
     if (!target || (overlayHwnd && GetAncestor(target, GA_ROOT) == overlayHwnd)) {
+        writeLongScreenshotLog("capture-covered failed seq=%llu event_to_capture_ms=%lld stage=no-target elapsed_ms=%lld region=%d,%d,%d,%d",
+                               static_cast<unsigned long long>(scrollSeq),
+                               scrollSeq ? elapsedMs(scrollAt) : -1,
+                               elapsedMs(started), region.x, region.y, region.w, region.h);
         return false;
     }
 
     HWND root = GetAncestor(target, GA_ROOT);
     if (!root || !IsWindowVisible(root) || IsIconic(root)) {
+        writeLongScreenshotLog("capture-covered failed seq=%llu event_to_capture_ms=%lld stage=bad-root elapsed_ms=%lld target=0x%p",
+                               static_cast<unsigned long long>(scrollSeq),
+                               scrollSeq ? elapsedMs(scrollAt) : -1,
+                               elapsedMs(started), target);
         return false;
     }
 
     RECT windowRect = {};
     if (!GetWindowRect(root, &windowRect)) {
+        writeLongScreenshotLog("capture-covered failed seq=%llu event_to_capture_ms=%lld stage=window-rect elapsed_ms=%lld root=0x%p",
+                               static_cast<unsigned long long>(scrollSeq),
+                               scrollSeq ? elapsedMs(scrollAt) : -1,
+                               elapsedMs(started), root);
         return false;
     }
 
@@ -668,6 +724,7 @@ bool Application::captureLongFramePixelsFromCoveredWindow(std::vector<uint8_t>& 
 
     HGDIOBJ oldBitmap = SelectObject(memDc, bitmap);
     const BOOL printed = PrintWindow(root, memDc, PW_RENDERFULLCONTENT);
+    const auto printedAt = std::chrono::steady_clock::now();
 
     outPixels.clear();
     outW = std::max(0, region.w);
@@ -695,6 +752,18 @@ bool Application::captureLongFramePixelsFromCoveredWindow(std::vector<uint8_t>& 
     DeleteDC(memDc);
     ReleaseDC(nullptr, screenDc);
 
+    writeLongScreenshotLog("capture-covered seq=%llu event_to_capture_ms=%lld result=%d elapsed_ms=%lld print_ms=%lld target=0x%p root=0x%p frame=%dx%d window=%dx%d",
+                           static_cast<unsigned long long>(scrollSeq),
+                           scrollSeq ? elapsedMs(scrollAt) : -1,
+                           printed != FALSE && !outPixels.empty(),
+                           elapsedMs(started),
+                           elapsedMs(started, printedAt),
+                           target,
+                           root,
+                           outW,
+                           outH,
+                           windowW,
+                           windowH);
     return printed != FALSE && !outPixels.empty();
 }
 
@@ -2091,6 +2160,7 @@ bool Application::ensureLongHintTexture() {
 }
 
 bool Application::captureLongScreenshot() {
+    writeLongScreenshotLog("session-start");
     if (isLongCaptureActive_) {
         std::printf("[long] Already in long screenshot mode\n");
         return false;
@@ -2132,9 +2202,14 @@ bool Application::captureLongScreenshot() {
     }
 
     core::LongScreenshotStitchOptions stitchOptions;
-    stitchOptions.minOverlapRows = std::min(selected.h - 1, std::max(32, selected.h / 3));
-    stitchOptions.maxOverlapRows = std::min(900, std::max(1, selected.h - 8));
-    stitchOptions.reliableMatchScore = 28.0f;
+    stitchOptions.minAppendRows = std::max(24, selected.h / 20);
+    stitchOptions.minOverlapRows = std::min(selected.h - 1, std::max(64, selected.h / 4));
+    stitchOptions.maxOverlapRows = std::min(
+        900,
+        std::max(1, selected.h - stitchOptions.minAppendRows));
+    stitchOptions.reliableMatchScore = 24.0f;
+    stitchOptions.acceptableMatchScore = 30.0f;
+    stitchOptions.ambiguousScoreGap = 2.0f;
     stitchOptions.appendOnUnreliableMatch = true;
     longStitcher_ = core::LongScreenshotStitcher(selected.w, stitchOptions);
     longStitcher_.start(firstFrame, selected.h);
@@ -2146,6 +2221,7 @@ bool Application::captureLongScreenshot() {
     isLongScreenshotResult_ = true;
     pendingLongFrameCapture_ = false;
     longNeedsTrailingFrameCapture_ = false;
+    longLastAppendedScrollSeq_ = 0;
     longLastFrameCapture_ = std::chrono::steady_clock::now();
     longScreenshotSourceRegion_ = selected;
     annotations_.clear();
@@ -2165,6 +2241,7 @@ bool Application::captureLongScreenshot() {
 
 void Application::handleLongScreenshotScroll(float scrollDelta,
                                              platform::Point cursorPosition) {
+    const auto started = std::chrono::steady_clock::now();
     if (!isLongCaptureActive_) {
         return;
     }
@@ -2173,6 +2250,7 @@ void Application::handleLongScreenshotScroll(float scrollDelta,
     if (wheelDelta >= 0) {
         return;
     }
+    const uint64_t scrollSeq = ++longScrollEventSeq_;
 
     platform::Point scrollPoint = {
         screenBounds_.x + cursorPosition.x,
@@ -2194,6 +2272,9 @@ void Application::handleLongScreenshotScroll(float scrollDelta,
                                    wheelDelta,
                                    platform_.overlay->getNativeHandle())) {
         std::fprintf(stderr, "[long] Manual scroll forwarding failed\n");
+        writeLongScreenshotLog("scroll-forward failed elapsed_ms=%lld delta=%d point=%d,%d cursor=%d,%d",
+                               elapsedMs(started), wheelDelta, scrollPoint.x, scrollPoint.y,
+                               cursorPosition.x, cursorPosition.y);
         return;
     }
 
@@ -2206,13 +2287,26 @@ void Application::handleLongScreenshotScroll(float scrollDelta,
 
     longNeedsTrailingFrameCapture_ = true;
     longTrailingFrameCaptureDue_ = trailingDue;
-    if (!pendingLongFrameCapture_) {
-        longFrameCaptureDue_ = nextDue;
-    }
+    longPendingFrameScrollSeq_ = scrollSeq;
+    longPendingFrameScrollAt_ = started;
+    longFrameCaptureDue_ = nextDue;
     pendingLongFrameCapture_ = true;
+    writeLongScreenshotLog("scroll-forward ok seq=%llu elapsed_ms=%lld delta=%d point=%d,%d cursor=%d,%d capture_due_ms=%lld trailing_due_ms=%d",
+                           static_cast<unsigned long long>(scrollSeq),
+                           elapsedMs(started),
+                           wheelDelta,
+                           scrollPoint.x,
+                           scrollPoint.y,
+                           cursorPosition.x,
+                           cursorPosition.y,
+                           std::max(0LL, elapsedMs(now, nextDue)),
+                           kLongTrailingCaptureDelayMs);
 }
 
 bool Application::appendLongScreenshotFrame() {
+    const auto started = std::chrono::steady_clock::now();
+    const uint64_t scrollSeq = longCurrentFrameScrollSeq_;
+    const auto scrollAt = longCurrentFrameScrollAt_;
     if (!isLongCaptureActive_) {
         return false;
     }
@@ -2243,23 +2337,73 @@ bool Application::appendLongScreenshotFrame() {
                          sourceLabel, frameW, frameH);
             return false;
         }
+        if (scrollSeq != 0 && longLastAppendedScrollSeq_ == scrollSeq) {
+            writeLongScreenshotLog("append skipped seq=%llu event_to_skip_ms=%lld source=%s reason=same-scroll-already-appended total_ms=%lld frame=%dx%d",
+                                   static_cast<unsigned long long>(scrollSeq),
+                                   elapsedMs(scrollAt),
+                                   sourceLabel,
+                                   elapsedMs(started),
+                                   frameW,
+                                   frameH);
+            return false;
+        }
 
-        auto stitch = longStitcher_.append(framePixels, frameH);
+        const auto stitchStarted = std::chrono::steady_clock::now();
+        const bool allowAcceptableMatch = scrollSeq == 0 ||
+            longLastAppendedScrollSeq_ != scrollSeq;
+        auto stitch = longStitcher_.append(framePixels, frameH, allowAcceptableMatch);
+        const auto stitchMs = elapsedMs(stitchStarted);
 
         if (!stitch.appended) {
             if (!stitch.duplicate) {
                 std::printf("[long] Ignored %s frame overlap=%d score=%.2f\n",
                             sourceLabel, stitch.overlapRows, stitch.score);
             }
+            writeLongScreenshotLog("append ignored seq=%llu event_to_append_ms=%lld source=%s duplicate=%d reliable=%d allow_acceptable=%d overlap=%d score=%.2f second=%.2f gap=%.2f stitch_ms=%lld total_ms=%lld frame=%dx%d",
+                                   static_cast<unsigned long long>(scrollSeq),
+                                   scrollSeq ? elapsedMs(scrollAt) : -1,
+                                   sourceLabel,
+                                   stitch.duplicate,
+                                   stitch.reliable,
+                                   allowAcceptableMatch,
+                                   stitch.overlapRows,
+                                   stitch.score,
+                                   stitch.secondBestScore,
+                                   stitch.secondBestScore - stitch.score,
+                                   stitchMs,
+                                   elapsedMs(started),
+                                   frameW,
+                                   frameH);
             return false;
         }
 
         capturedW_ = longStitcher_.width();
         capturedH_ = longStitcher_.height();
         capturedPixels_ = longStitcher_.pixels();
+        longLastAppendedScrollSeq_ = scrollSeq;
+        const auto uploadStarted = std::chrono::steady_clock::now();
         uploadScreenshotTextureFromPixels(longStitcher_.pixels(), capturedW_, capturedH_);
+        const auto uploadMs = elapsedMs(uploadStarted);
         stateMachine_.setSelectedRegion(fitLongPreviewRect(capturedW_, capturedH_));
         buildToolbar();
+        writeLongScreenshotLog("append ok seq=%llu event_to_append_ms=%lld source=%s reliable=%d allow_acceptable=%d appended_rows=%d overlap=%d score=%.2f second=%.2f gap=%.2f stitch_ms=%lld upload_ms=%lld total_ms=%lld output=%dx%d frame=%dx%d",
+                               static_cast<unsigned long long>(scrollSeq),
+                               scrollSeq ? elapsedMs(scrollAt) : -1,
+                               sourceLabel,
+                               stitch.reliable,
+                               allowAcceptableMatch,
+                               stitch.appendedRows,
+                               stitch.overlapRows,
+                               stitch.score,
+                               stitch.secondBestScore,
+                               stitch.secondBestScore - stitch.score,
+                               stitchMs,
+                               uploadMs,
+                               elapsedMs(started),
+                               capturedW_,
+                               capturedH_,
+                               frameW,
+                               frameH);
         return true;
     };
 
@@ -2344,17 +2488,34 @@ void Application::runPendingActions() {
     const auto trailingDue = longTrailingFrameCaptureDue_;
     longNeedsTrailingFrameCapture_ = false;
     longLastFrameCapture_ = now;
-    if (appendLongScreenshotFrame()) {
+    const uint64_t scrollSeq = longPendingFrameScrollSeq_;
+    const auto scrollAt = longPendingFrameScrollAt_;
+    longCurrentFrameScrollSeq_ = scrollSeq;
+    longCurrentFrameScrollAt_ = scrollAt;
+    writeLongScreenshotLog("capture-due seq=%llu event_to_due_ms=%lld schedule_trailing=%d",
+                           static_cast<unsigned long long>(scrollSeq),
+                           scrollSeq ? elapsedMs(scrollAt, now) : -1,
+                           scheduleTrailingCapture);
+    const bool appended = appendLongScreenshotFrame();
+    if (appended) {
+        const auto renderStarted = std::chrono::steady_clock::now();
         render();
+        writeLongScreenshotLog("render-after-append seq=%llu event_to_render_ms=%lld render_ms=%lld",
+                               static_cast<unsigned long long>(scrollSeq),
+                               scrollSeq ? elapsedMs(scrollAt) : -1,
+                               elapsedMs(renderStarted));
     }
 
-    if (isLongCaptureActive_ && scheduleTrailingCapture) {
+    if (isLongCaptureActive_ && scheduleTrailingCapture && !appended) {
         const auto afterCapture = std::chrono::steady_clock::now();
         const auto requestedDue = afterCapture + std::chrono::milliseconds(kLongCaptureDelayMs);
         const auto intervalDue = longLastFrameCapture_ +
             std::chrono::milliseconds(kLongMinCaptureIntervalMs);
         longFrameCaptureDue_ = std::max({ requestedDue, intervalDue, trailingDue });
         pendingLongFrameCapture_ = true;
+    } else if (isLongCaptureActive_ && scheduleTrailingCapture && appended) {
+        writeLongScreenshotLog("trailing-skip seq=%llu reason=already-appended",
+                               static_cast<unsigned long long>(scrollSeq));
     }
 }
 
@@ -2376,6 +2537,10 @@ void Application::resetCaptureSession() {
     pendingLongScreenshot_ = false;
     pendingLongFrameCapture_ = false;
     longNeedsTrailingFrameCapture_ = false;
+    longScrollEventSeq_ = 0;
+    longPendingFrameScrollSeq_ = 0;
+    longCurrentFrameScrollSeq_ = 0;
+    longLastAppendedScrollSeq_ = 0;
     longScreenshotSourceRegion_ = {};
     longStitcher_.reset(0);
     longBackgroundPixels_.clear();

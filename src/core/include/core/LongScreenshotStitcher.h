@@ -8,9 +8,11 @@ namespace sst::core {
 struct LongScreenshotStitchResult {
     bool  appended     = false;
     bool  duplicate    = false;
+    bool  reliable     = false;
     int   overlapRows  = 0;
     int   appendedRows = 0;
     float score        = 0.0f;
+    float secondBestScore = 0.0f;
 };
 
 struct LongScreenshotStitchOptions {
@@ -19,6 +21,8 @@ struct LongScreenshotStitchOptions {
     int   minAppendRows     = 6;
     float duplicateScore    = 1.0f;
     float reliableMatchScore = 16.0f;
+    float acceptableMatchScore = 30.0f;
+    float ambiguousScoreGap = 1.5f;
     bool  appendOnUnreliableMatch = true;
 };
 
@@ -30,7 +34,8 @@ public:
     void reset(int width);
     void start(const std::vector<uint8_t>& firstFrame, int frameHeight);
     LongScreenshotStitchResult append(const std::vector<uint8_t>& nextFrame,
-                                      int frameHeight);
+                                      int frameHeight,
+                                      bool allowAcceptableMatch = true);
 
     bool empty() const { return pixels_.empty(); }
     int width() const { return width_; }
@@ -38,15 +43,8 @@ public:
     const std::vector<uint8_t>& pixels() const { return pixels_; }
 
 private:
-    float compareOverlap(const std::vector<uint8_t>& nextFrame,
-                         int frameHeight,
-                         int overlapRows) const;
     float compareDuplicate(const std::vector<uint8_t>& nextFrame,
                            int frameHeight) const;
-    float contentWeight(const std::vector<uint8_t>& frame,
-                        int frameHeight,
-                        int x,
-                        int y) const;
 
     int width_ = 0;
     int height_ = 0;

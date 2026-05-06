@@ -13,6 +13,10 @@ target_link_libraries(screenshot PRIVATE
     gdi32
 )
 
+target_compile_definitions(screenshot PRIVATE
+    SST_LOG_DIR="${CMAKE_SOURCE_DIR}/logs"
+)
+
 # Embed the DPI-awareness manifest
 if(MSVC)
     set_target_properties(screenshot PROPERTIES
