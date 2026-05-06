@@ -59,9 +59,9 @@ A high-performance cross-platform screenshot tool built with **DXGI Desktop Dupl
 
 ## 🚀 Build Instructions
 
-### Option 1: Pre-built ANGLE (Recommended)
+### Option 1: Bundled ANGLE (Recommended)
 
-Download ANGLE binaries and place them in:
+The repository includes Windows ANGLE headers, import libraries, and runtime DLLs:
 
 ```
 third_party/angle/
@@ -70,7 +70,7 @@ third_party/angle/
   └── bin/       # .dll files
 ```
 
-Then build:
+Build directly after cloning:
 
 ```bash
 mkdir build && cd build
@@ -107,7 +107,7 @@ ctest --output-on-failure
 │   └── renderer/      # OpenGL ES rendering subsystem
 ├── tests/             # Unit tests (state machine, core logic)
 ├── third_party/       # External dependencies
-│   ├── angle/         # ANGLE binaries (not in git)
+│   ├── angle/         # ANGLE headers, import libs, and runtime DLLs
 │   └── stb/           # STB image library
 ├── docs/              # Architecture decisions and feature discussions
 └── CMakeLists.txt     # Root build configuration

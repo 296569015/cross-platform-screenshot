@@ -3,6 +3,7 @@
 #include "ShaderProgram.h"
 #include <platform/PlatformTypes.h>
 #include <cstdint>
+#include <vector>
 
 namespace sst::renderer {
 
@@ -28,6 +29,10 @@ public:
     /// Draw a line segment.
     void drawLine(float x0, float y0, float x1, float y1,
                   platform::Color color, float thickness = 2.0f);
+
+    /// Draw a continuous polyline by joining line segments.
+    void drawPolyline(const std::vector<platform::PointF>& points,
+                      platform::Color color, float thickness = 2.0f);
 
     /// Draw an arrow from (x0,y0) to (x1,y1) with arrowhead.
     void drawArrow(float x0, float y0, float x1, float y1,

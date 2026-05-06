@@ -2,6 +2,7 @@ add_library(core STATIC
     src/ScreenshotStateMachine.cpp
     src/AnnotationModel.cpp
     src/CommandHistory.cpp
+    src/LongScreenshotStitcher.cpp
 )
 
 target_include_directories(core
@@ -10,5 +11,4 @@ target_include_directories(core
 
 target_link_libraries(core
     PUBLIC  platform_interfaces
-            renderer
 )

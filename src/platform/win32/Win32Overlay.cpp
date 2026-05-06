@@ -1,6 +1,8 @@
 #include "Win32Overlay.h"
 #include <shellscalingapi.h>
 #include <dwmapi.h>
+#include <windowsx.h>
+#include <cstdio>
 
 #pragma comment(lib, "dwmapi.lib")
 #pragma comment(lib, "shcore.lib")
@@ -44,6 +46,12 @@ bool Win32Overlay::create(const Rect& bounds) {
     );
 
     if (!hwnd_) return false;
+
+    // Keep the overlay capturable. Excluding it with SetWindowDisplayAffinity
+    // breaks remote-control viewers and other screenshot tools, which see a
+    // black fullscreen window instead of the composed overlay.
+    std::printf("[overlay] Capture affinity left at default\n");
+
 
     size_ = { bounds.w, bounds.h };
 
@@ -89,14 +97,32 @@ void Win32Overlay::setKeyCallback(std::function<void(const KeyEvent&)> cb) {
 
 bool Win32Overlay::pumpMessages() {
     MSG msg;
-    while (PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE)) {
-        if (msg.message == WM_QUIT) {
-            quitRequested_ = true;
-            return false;
+    bool processed = false;
+
+    do {
+        processed = false;
+
+        while (PeekMessage(&msg, nullptr, 0, WM_HOTKEY - 1, PM_REMOVE)) {
+            processed = true;
+            if (msg.message == WM_QUIT) {
+                quitRequested_ = true;
+                return false;
+            }
+            TranslateMessage(&msg);
+            DispatchMessage(&msg);
         }
-        TranslateMessage(&msg);
-        DispatchMessage(&msg);
-    }
+
+        while (PeekMessage(&msg, nullptr, WM_HOTKEY + 1, static_cast<UINT>(-1), PM_REMOVE)) {
+            processed = true;
+            if (msg.message == WM_QUIT) {
+                quitRequested_ = true;
+                return false;
+            }
+            TranslateMessage(&msg);
+            DispatchMessage(&msg);
+        }
+    } while (processed);
+
     return !quitRequested_;
 }
 
@@ -140,8 +166,8 @@ LRESULT Win32Overlay::handleMessage(UINT msg, WPARAM wp, LPARAM lp) {
         }
 
         MouseEvent evt;
-        evt.position.x = static_cast<int16_t>(LOWORD(lp));
-        evt.position.y = static_cast<int16_t>(HIWORD(lp));
+        evt.position.x = GET_X_LPARAM(lp);
+        evt.position.y = GET_Y_LPARAM(lp);
         evt.type = MouseEvent::Type::Move;
         if (wp & MK_SHIFT)   evt.modifiers |= static_cast<uint8_t>(KeyModifier::Shift);
         if (wp & MK_CONTROL) evt.modifiers |= static_cast<uint8_t>(KeyModifier::Ctrl);
@@ -159,8 +185,8 @@ LRESULT Win32Overlay::handleMessage(UINT msg, WPARAM wp, LPARAM lp) {
         if (!mouseCallback_) break;
 
         MouseEvent evt;
-        evt.position.x = static_cast<int16_t>(LOWORD(lp));
-        evt.position.y = static_cast<int16_t>(HIWORD(lp));
+        evt.position.x = GET_X_LPARAM(lp);
+        evt.position.y = GET_Y_LPARAM(lp);
 
         if (wp & MK_SHIFT)   evt.modifiers |= static_cast<uint8_t>(KeyModifier::Shift);
         if (wp & MK_CONTROL) evt.modifiers |= static_cast<uint8_t>(KeyModifier::Ctrl);

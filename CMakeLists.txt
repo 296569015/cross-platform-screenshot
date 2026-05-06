@@ -12,7 +12,22 @@ option(SST_BUILD_TESTS "Build unit tests" ON)
 # Look for pre-built ANGLE first, then vcpkg
 set(ANGLE_DIR "${CMAKE_SOURCE_DIR}/third_party/angle" CACHE PATH "Path to pre-built ANGLE")
 
-if(EXISTS "${ANGLE_DIR}/include/EGL/egl.h")
+set(SST_ANGLE_REQUIRED_FILES
+    "${ANGLE_DIR}/include/EGL/egl.h"
+    "${ANGLE_DIR}/include/GLES3/gl3.h"
+    "${ANGLE_DIR}/lib/libEGL.lib"
+    "${ANGLE_DIR}/lib/libGLESv2.lib"
+    "${ANGLE_DIR}/bin/libEGL.dll"
+    "${ANGLE_DIR}/bin/libGLESv2.dll"
+)
+set(SST_ANGLE_PREBUILT_AVAILABLE ON)
+foreach(SST_ANGLE_FILE IN LISTS SST_ANGLE_REQUIRED_FILES)
+    if(NOT EXISTS "${SST_ANGLE_FILE}")
+        set(SST_ANGLE_PREBUILT_AVAILABLE OFF)
+    endif()
+endforeach()
+
+if(SST_ANGLE_PREBUILT_AVAILABLE)
     message(STATUS "Using pre-built ANGLE from: ${ANGLE_DIR}")
     add_library(angle_egl SHARED IMPORTED)
     set_target_properties(angle_egl PROPERTIES

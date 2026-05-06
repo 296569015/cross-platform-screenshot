@@ -10,6 +10,7 @@ target_link_libraries(screenshot PRIVATE
     angle_egl
     angle_glesv2
     stb
+    gdi32
 )
 
 # Embed the DPI-awareness manifest
