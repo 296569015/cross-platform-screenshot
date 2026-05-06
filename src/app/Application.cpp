@@ -66,6 +66,7 @@ static const platform::Color kBtnHover     = { 64, 64, 64, 255 };   // #404040
 static const platform::Color kBtnSelected  = { 66, 133, 244, 255 }; // #4285F4
 static const platform::Color kBtnIcon      = { 220, 220, 220, 255 };// light gray icons
 static const platform::Color kSelBorder    = { 66, 133, 244, 255 }; // #4285F4
+static const platform::Color kLongBorder   = { 255, 80, 92, 255 };
 static const platform::Color kDimColor     = { 0, 0, 0, 128 };
 static const platform::Color kLongDimColor = { 0, 0, 0, 138 };
 static const platform::Color kLongPanel    = { 246, 247, 249, 245 };
@@ -77,10 +78,10 @@ static const platform::Color kLongConfirm  = { 22, 185, 111, 255 };
 static constexpr int kLongMaxFrames = 18;
 static constexpr int kLongScrollNotches = 3;
 static constexpr int kLongMaxOutputHeight = 16000;
-static constexpr int kLongCaptureDelayMs = 110;
-static constexpr int kLongNativePassthroughCaptureDelayMs = 180;
-static constexpr int kLongTrailingCaptureDelayMs = 260;
-static constexpr int kLongMinCaptureIntervalMs = 120;
+static constexpr int kLongCaptureDelayMs = 80;
+static constexpr int kLongNativePassthroughCaptureDelayMs = 45;
+static constexpr int kLongTrailingCaptureDelayMs = 200;
+static constexpr int kLongMinCaptureIntervalMs = 60;
 static constexpr int kLongPreviewMargin = 72;
 static constexpr float kLongToolbarBtnSize = 40.f;
 
@@ -1421,9 +1422,6 @@ void Application::renderSoftwareOverlay() {
             const float visibleV = capturedH_ > 0
                 ? std::clamp(ph / (static_cast<float>(capturedH_) * previewScale), 0.0f, 1.0f)
                 : 1.0f;
-            drawGdiRectFilled(memDc, px - 2.f, py - 2.f, pw + 4.f, ph + 4.f,
-                              { 255, 255, 255, 245 });
-
             const float thumbMaxH = std::min(static_cast<float>(height) - 32.f,
                                              std::max(ph, ph + 96.f));
             const float thumbH = std::max(160.f, thumbMaxH);
@@ -1471,9 +1469,10 @@ void Application::renderSoftwareOverlay() {
             }
         }
 
+        const auto borderColor = isLongScreenshotResult_ ? kLongBorder : kSelBorder;
         drawGdiRectOutline(memDc, static_cast<float>(sel.x), static_cast<float>(sel.y),
                            static_cast<float>(sel.w), static_cast<float>(sel.h),
-                           kSelBorder, 2.0f);
+                           borderColor, isLongScreenshotResult_ ? 3.0f : 2.0f);
 
         auto drawAnnotation = [&](const core::Annotation& ann) {
             std::visit([&](const auto& a) {
@@ -1801,9 +1800,7 @@ void Application::renderLongScreenshotUi() {
                                    thumbW + 4.f, viewportH + 2.f,
                                    { 255, 255, 255, 235 }, 2.0f);
 
-    shapeRenderer_.drawRectFilled(px - 2.f, py - 2.f,
-                                  pw + 4.f, ph + 4.f,
-                                  { 255, 255, 255, 245 });
+    shapeRenderer_.drawRectOutline(px, py, pw, ph, kLongBorder, 3.0f);
 
     const bool hasHint = ensureLongHintTexture();
     const float hintW = hasHint ? static_cast<float>(longHintTextW_ + 42) : 260.f;
@@ -2305,9 +2302,9 @@ bool Application::captureLongScreenshot() {
         900,
         std::max(1, selected.h - stitchOptions.minAppendRows));
     stitchOptions.reliableMatchScore = 24.0f;
-    stitchOptions.acceptableMatchScore = 20.0f;
+    stitchOptions.acceptableMatchScore = 15.5f;
     stitchOptions.ambiguousScoreGap = 2.0f;
-    stitchOptions.acceptableScoreGap = 1.0f;
+    stitchOptions.acceptableScoreGap = 0.4f;
     stitchOptions.appendOnUnreliableMatch = true;
     longStitcher_ = core::LongScreenshotStitcher(selected.w, stitchOptions);
     longStitcher_.start(firstFrame, selected.h);
@@ -2389,12 +2386,16 @@ void Application::handleLongScreenshotScroll(float scrollDelta,
     const auto intervalDue = longLastFrameCapture_ +
         std::chrono::milliseconds(kLongMinCaptureIntervalMs);
     const auto nextDue = std::max(requestedDue, intervalDue);
+    const bool hadPendingCapture = pendingLongFrameCapture_;
+    const auto scheduledDue = hadPendingCapture
+        ? std::min(longFrameCaptureDue_, nextDue)
+        : nextDue;
 
     longNeedsTrailingFrameCapture_ = true;
     longTrailingFrameCaptureDue_ = trailingDue;
     longPendingFrameScrollSeq_ = scrollSeq;
     longPendingFrameScrollAt_ = started;
-    longFrameCaptureDue_ = nextDue;
+    longFrameCaptureDue_ = scheduledDue;
     pendingLongFrameCapture_ = true;
     writeLongScreenshotLog("%s ok seq=%llu elapsed_ms=%lld delta=%d point=%d,%d cursor=%d,%d capture_due_ms=%lld trailing_due_ms=%d",
                            nativePassthrough ? "scroll-observed" : "scroll-forward",
@@ -2405,7 +2406,7 @@ void Application::handleLongScreenshotScroll(float scrollDelta,
                            scrollPoint.y,
                            cursorPosition.x,
                            cursorPosition.y,
-                           std::max(0LL, elapsedMs(now, nextDue)),
+                           std::max(0LL, elapsedMs(now, scheduledDue)),
                            kLongTrailingCaptureDelayMs);
 }
 
