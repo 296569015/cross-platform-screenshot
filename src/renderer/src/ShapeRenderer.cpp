@@ -1,5 +1,6 @@
 #include "renderer/ShapeRenderer.h"
 #include <GLES3/gl3.h>
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <vector>
@@ -138,6 +139,10 @@ void ShapeRenderer::drawAATriangles(const float* vertices, int vertexCount,
 
 void ShapeRenderer::drawRectFilled(float x, float y, float w, float h,
                                    platform::Color color) {
+    if (w <= 0.0f || h <= 0.0f) {
+        return;
+    }
+
     float vertices[] = {
         x,     y,
         x + w, y,
@@ -160,6 +165,56 @@ void ShapeRenderer::drawRectFilled(float x, float y, float w, float h,
     glBindVertexArray(0);
 }
 
+void ShapeRenderer::drawRoundedRectFilled(float x, float y, float w, float h,
+                                          float radius, platform::Color color) {
+    if (w <= 0.0f || h <= 0.0f) {
+        return;
+    }
+
+    radius = std::clamp(radius, 0.0f, std::min(w, h) * 0.5f);
+    if (radius <= 0.5f) {
+        drawRectFilled(x, y, w, h, color);
+        return;
+    }
+
+    drawRectFilled(x + radius, y, w - radius * 2.0f, h, color);
+    drawRectFilled(x, y + radius, radius, h - radius * 2.0f, color);
+    drawRectFilled(x + w - radius, y + radius, radius, h - radius * 2.0f, color);
+
+    constexpr int kSegments = 8;
+    auto drawCorner = [&](float cx, float cy, float startAngle) {
+        std::vector<float> vertices;
+        vertices.reserve(static_cast<size_t>(kSegments + 2) * 2);
+        vertices.push_back(cx);
+        vertices.push_back(cy);
+        for (int i = 0; i <= kSegments; ++i) {
+            const float a = startAngle + (static_cast<float>(i) / kSegments) * 1.57079632679f;
+            vertices.push_back(cx + std::cos(a) * radius);
+            vertices.push_back(cy + std::sin(a) * radius);
+        }
+
+        shader_.use();
+        shader_.setMat4("u_projection", projection_);
+        shader_.setVec4("u_color",
+                        color.r / 255.0f, color.g / 255.0f,
+                        color.b / 255.0f, color.a / 255.0f);
+
+        glBindVertexArray(vao_);
+        glBindBuffer(GL_ARRAY_BUFFER, vbo_);
+        glBufferData(GL_ARRAY_BUFFER,
+                     static_cast<GLsizeiptr>(vertices.size() * sizeof(float)),
+                     vertices.data(),
+                     GL_DYNAMIC_DRAW);
+        glDrawArrays(GL_TRIANGLE_FAN, 0, static_cast<GLsizei>(vertices.size() / 2));
+        glBindVertexArray(0);
+    };
+
+    drawCorner(x + radius, y + radius, 3.14159265359f);
+    drawCorner(x + w - radius, y + radius, 4.71238898038f);
+    drawCorner(x + w - radius, y + h - radius, 0.0f);
+    drawCorner(x + radius, y + h - radius, 1.57079632679f);
+}
+
 void ShapeRenderer::drawRectOutline(float x, float y, float w, float h,
                                     platform::Color color, float thickness) {
     float t = thickness;
@@ -168,6 +223,36 @@ void ShapeRenderer::drawRectOutline(float x, float y, float w, float h,
     drawRectFilled(x, y + h - t, w, t, color);   // bottom
     drawRectFilled(x, y, t, h, color);            // left
     drawRectFilled(x + w - t, y, t, h, color);   // right
+}
+
+void ShapeRenderer::drawRoundedRectOutline(float x, float y, float w, float h,
+                                           float radius, platform::Color color,
+                                           float thickness) {
+    if (w <= 0.0f || h <= 0.0f || thickness <= 0.0f) {
+        return;
+    }
+
+    radius = std::clamp(radius, thickness, std::min(w, h) * 0.5f);
+    drawLine(x + radius, y, x + w - radius, y, color, thickness);
+    drawLine(x + radius, y + h, x + w - radius, y + h, color, thickness);
+    drawLine(x, y + radius, x, y + h - radius, color, thickness);
+    drawLine(x + w, y + radius, x + w, y + h - radius, color, thickness);
+
+    constexpr int kSegments = 8;
+    auto drawArc = [&](float cx, float cy, float startAngle) {
+        std::vector<platform::PointF> points;
+        points.reserve(kSegments + 1);
+        for (int i = 0; i <= kSegments; ++i) {
+            const float a = startAngle + (static_cast<float>(i) / kSegments) * 1.57079632679f;
+            points.push_back({ cx + std::cos(a) * radius, cy + std::sin(a) * radius });
+        }
+        drawPolyline(points, color, thickness);
+    };
+
+    drawArc(x + radius, y + radius, 3.14159265359f);
+    drawArc(x + w - radius, y + radius, 4.71238898038f);
+    drawArc(x + w - radius, y + h - radius, 0.0f);
+    drawArc(x + radius, y + h - radius, 1.57079632679f);
 }
 
 void ShapeRenderer::drawLine(float x0, float y0, float x1, float y1,

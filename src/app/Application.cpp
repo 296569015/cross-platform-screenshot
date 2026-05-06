@@ -55,25 +55,33 @@
 namespace sst::app {
 
 // ── Design tokens (Snipaste-style) ──────────────────────────────
-static constexpr float kBtnSize    = 32.f;
-static constexpr float kBtnGap     = 4.f;
-static constexpr float kToolbarPad = 6.f;
-static constexpr float kToolbarGap = 8.f;  // gap between toolbar and selection
-static constexpr float kCornerR    = 6.f;
+static constexpr float kBtnSize         = 34.f;
+static constexpr float kBtnGap          = 6.f;
+static constexpr float kToolbarPad      = 6.f;
+static constexpr float kToolbarGap      = 12.f;
+static constexpr float kToolbarGroupGap = 12.f;
+static constexpr float kCornerR         = 8.f;
+static constexpr float kBtnCornerR      = 6.f;
 
-static const platform::Color kToolbarBg    = { 45, 45, 45, 230 };   // #2D2D2DE6
-static const platform::Color kBtnHover     = { 64, 64, 64, 255 };   // #404040
-static const platform::Color kBtnSelected  = { 66, 133, 244, 255 }; // #4285F4
-static const platform::Color kBtnIcon      = { 220, 220, 220, 255 };// light gray icons
-static const platform::Color kSelBorder    = { 66, 133, 244, 255 }; // #4285F4
-static const platform::Color kLongBorder   = { 255, 80, 92, 255 };
-static const platform::Color kDimColor     = { 0, 0, 0, 128 };
-static const platform::Color kLongDimColor = { 0, 0, 0, 138 };
-static const platform::Color kLongPanel    = { 246, 247, 249, 245 };
-static const platform::Color kLongToolbar  = { 255, 255, 255, 248 };
-static const platform::Color kLongHintBg   = { 98, 98, 98, 196 };
-static const platform::Color kLongCancel   = { 255, 80, 92, 255 };
-static const platform::Color kLongConfirm  = { 22, 185, 111, 255 };
+static const platform::Color kToolbarBg     = { 18, 24, 31, 236 };
+static const platform::Color kToolbarStroke = { 255, 255, 255, 34 };
+static const platform::Color kToolbarShadow = { 0, 0, 0, 70 };
+static const platform::Color kBtnHover      = { 255, 255, 255, 28 };
+static const platform::Color kBtnSelected   = { 56, 189, 248, 72 };
+static const platform::Color kBtnIcon       = { 225, 234, 242, 255 };
+static const platform::Color kBtnMuted      = { 167, 176, 188, 255 };
+static const platform::Color kSelBorder     = { 56, 189, 248, 255 };
+static const platform::Color kSelAccent     = { 94, 234, 212, 255 };
+static const platform::Color kAnnotationRed = { 255, 92, 92, 255 };
+static const platform::Color kActionSuccess = { 34, 197, 94, 255 };
+static const platform::Color kLongBorder    = { 255, 92, 92, 255 };
+static const platform::Color kDimColor      = { 4, 8, 12, 168 };
+static const platform::Color kLongDimColor  = { 4, 8, 12, 178 };
+static const platform::Color kLongPanel     = { 247, 250, 252, 245 };
+static const platform::Color kLongToolbar   = { 247, 250, 252, 246 };
+static const platform::Color kLongHintBg    = { 93, 65, 18, 210 };
+static const platform::Color kLongCancel    = { 255, 92, 92, 255 };
+static const platform::Color kLongConfirm   = { 34, 197, 94, 255 };
 
 static constexpr int kLongMaxFrames = 18;
 static constexpr int kLongScrollNotches = 3;
@@ -150,6 +158,10 @@ Gdiplus::Color gdiplusColor(platform::Color color) {
                           colorByte(color.b));
 }
 
+Gdiplus::RectF gdiplusRect(float x, float y, float w, float h) {
+    return Gdiplus::RectF(x, y, std::max(0.0f, w), std::max(0.0f, h));
+}
+
 void ensureGdiplusStarted() {
     static ULONG_PTR token = 0;
     static bool attempted = false;
@@ -162,6 +174,93 @@ void ensureGdiplusStarted() {
     if (Gdiplus::GdiplusStartup(&token, &input, nullptr) != Gdiplus::Ok) {
         token = 0;
     }
+}
+
+void addRoundedRectPath(Gdiplus::GraphicsPath& path,
+                        float x,
+                        float y,
+                        float w,
+                        float h,
+                        float radius) {
+    radius = std::clamp(radius, 0.0f, std::min(w, h) * 0.5f);
+    const float d = radius * 2.0f;
+    if (radius <= 0.5f) {
+        path.AddRectangle(gdiplusRect(x, y, w, h));
+        return;
+    }
+
+    path.AddArc(x, y, d, d, 180.0f, 90.0f);
+    path.AddArc(x + w - d, y, d, d, 270.0f, 90.0f);
+    path.AddArc(x + w - d, y + h - d, d, d, 0.0f, 90.0f);
+    path.AddArc(x, y + h - d, d, d, 90.0f, 90.0f);
+    path.CloseFigure();
+}
+
+void drawGdiRoundedRectFilled(HDC dc,
+                              float x,
+                              float y,
+                              float w,
+                              float h,
+                              float radius,
+                              platform::Color color) {
+    ensureGdiplusStarted();
+    Gdiplus::Graphics graphics(dc);
+    graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+    graphics.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
+
+    Gdiplus::GraphicsPath path;
+    addRoundedRectPath(path, x, y, w, h, radius);
+    Gdiplus::SolidBrush brush(gdiplusColor(color));
+    graphics.FillPath(&brush, &path);
+}
+
+void drawGdiRoundedRectOutline(HDC dc,
+                               float x,
+                               float y,
+                               float w,
+                               float h,
+                               float radius,
+                               platform::Color color,
+                               float thickness) {
+    ensureGdiplusStarted();
+    Gdiplus::Graphics graphics(dc);
+    graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+    graphics.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
+
+    const float inset = thickness * 0.5f;
+    Gdiplus::GraphicsPath path;
+    addRoundedRectPath(path, x + inset, y + inset, w - thickness, h - thickness,
+                       std::max(0.0f, radius - inset));
+    Gdiplus::Pen pen(gdiplusColor(color), std::max(1.0f, thickness));
+    graphics.DrawPath(&pen, &path);
+}
+
+void drawGdiTextLabel(HDC dc,
+                      const wchar_t* text,
+                      float x,
+                      float y,
+                      float w,
+                      float h,
+                      platform::Color color,
+                      int fontPx = 15,
+                      int weight = FW_SEMIBOLD) {
+    HFONT font = CreateFontW(-fontPx, 0, 0, 0, weight, FALSE, FALSE, FALSE,
+                             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+                             CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                             DEFAULT_PITCH | FF_DONTCARE,
+                             L"Microsoft YaHei UI");
+    HGDIOBJ oldFont = SelectObject(dc, font);
+    SetBkMode(dc, TRANSPARENT);
+    SetTextColor(dc, colorRef(color));
+    RECT rect = {
+        static_cast<LONG>(std::round(x)),
+        static_cast<LONG>(std::round(y)),
+        static_cast<LONG>(std::round(x + w)),
+        static_cast<LONG>(std::round(y + h))
+    };
+    DrawTextW(dc, text, -1, &rect, DT_SINGLELINE | DT_CENTER | DT_VCENTER | DT_END_ELLIPSIS);
+    SelectObject(dc, oldFont);
+    DeleteObject(font);
 }
 
 void appendFreehandPoint(std::vector<platform::PointF>& points, float x, float y) {
@@ -1062,9 +1161,12 @@ void Application::buildToolbar() {
         return;
     }
 
-    // 9 buttons: [Rect] [Arrow] [Line] [Brush] [Long] | [Undo] [Save] [Copy] [Cancel]
-    int numButtons = 9;
-    float totalW = kToolbarPad * 2 + numButtons * kBtnSize + (numButtons - 1) * kBtnGap;
+    // [Rect] [Arrow] [Line] [Brush] [Long] | [Undo] | [Save] [Copy] [Cancel] [Confirm]
+    constexpr int numButtons = 10;
+    constexpr int normalGaps = 7;
+    constexpr int groupGaps = 2;
+    float totalW = kToolbarPad * 2 + numButtons * kBtnSize +
+                   normalGaps * kBtnGap + groupGaps * kToolbarGroupGap;
     float totalH = kToolbarPad * 2 + kBtnSize;
 
     // Position: below selection, right-aligned
@@ -1093,16 +1195,22 @@ void Application::buildToolbar() {
         toolButtons_.push_back({ bx, by, kBtnSize, kBtnSize, type, false });
         bx += kBtnSize + kBtnGap;
     };
+    auto addGroupGap = [&]() {
+        bx += kToolbarGroupGap - kBtnGap;
+    };
 
     addBtn(ToolButton::Type::Rectangle);
     addBtn(ToolButton::Type::Arrow);
     addBtn(ToolButton::Type::Line);
     addBtn(ToolButton::Type::Freehand);
     addBtn(ToolButton::Type::LongScreenshot);
+    addGroupGap();
     addBtn(ToolButton::Type::Undo);
+    addGroupGap();
     addBtn(ToolButton::Type::Save);
     addBtn(ToolButton::Type::Copy);
     addBtn(ToolButton::Type::Cancel);
+    addBtn(ToolButton::Type::Confirm);
 }
 
 bool Application::hitTestToolbar(float mx, float my) {
@@ -1417,6 +1525,27 @@ void Application::renderSoftwareOverlay() {
             const float x1 = std::max(dragStartX_, dragCurrX_);
             const float y1 = std::max(dragStartY_, dragCurrY_);
             drawGdiRectOutline(memDc, x0, y0, x1 - x0, y1 - y0, kSelBorder, 2.0f);
+            drawGdiLine(memDc, x0 - 4.f, y0 - 4.f, x0 + 30.f, y0 - 4.f, kSelAccent, 2.0f);
+            drawGdiLine(memDc, x0 - 4.f, y0 - 4.f, x0 - 4.f, y0 + 30.f, kSelAccent, 2.0f);
+            drawGdiLine(memDc, x1 + 4.f, y1 + 4.f, x1 - 30.f, y1 + 4.f, kSelAccent, 2.0f);
+            drawGdiLine(memDc, x1 + 4.f, y1 + 4.f, x1 + 4.f, y1 - 30.f, kSelAccent, 2.0f);
+
+            wchar_t label[64] = {};
+            std::swprintf(label, 64, L"%d x %d",
+                          static_cast<int>(std::round(x1 - x0)),
+                          static_cast<int>(std::round(y1 - y0)));
+            const float labelW = 92.f;
+            const float labelH = 26.f;
+            const float labelX = std::clamp(x0, 8.f, std::max(8.f, static_cast<float>(width) - labelW - 8.f));
+            const float labelY = y0 - labelH - 8.f >= 8.f ? y0 - labelH - 8.f : y0 + 8.f;
+            drawGdiRoundedRectFilled(memDc, labelX + 2.f, labelY + 3.f, labelW, labelH,
+                                     6.f, { 0, 0, 0, 72 });
+            drawGdiRoundedRectFilled(memDc, labelX, labelY, labelW, labelH,
+                                     6.f, { 13, 18, 24, 236 });
+            drawGdiRoundedRectOutline(memDc, labelX, labelY, labelW, labelH,
+                                      6.f, kToolbarStroke, 1.0f);
+            drawGdiTextLabel(memDc, label, labelX, labelY, labelW, labelH,
+                             { 216, 249, 255, 255 }, 14);
         }
     } else if (state == core::AppState::Annotating) {
         auto sel = stateMachine_.selectedRegion();
@@ -1483,6 +1612,33 @@ void Application::renderSoftwareOverlay() {
         drawGdiRectOutline(memDc, static_cast<float>(sel.x), static_cast<float>(sel.y),
                            static_cast<float>(sel.w), static_cast<float>(sel.h),
                            borderColor, isLongScreenshotResult_ ? 3.0f : 2.0f);
+        if (!isLongScreenshotResult_) {
+            const float sx = static_cast<float>(sel.x);
+            const float sy = static_cast<float>(sel.y);
+            const float swf = static_cast<float>(sel.w);
+            const float shf = static_cast<float>(sel.h);
+            drawGdiLine(memDc, sx - 4.f, sy - 4.f, sx + 30.f, sy - 4.f, kSelAccent, 2.0f);
+            drawGdiLine(memDc, sx - 4.f, sy - 4.f, sx - 4.f, sy + 30.f, kSelAccent, 2.0f);
+            drawGdiLine(memDc, sx + swf + 4.f, sy + shf + 4.f,
+                        sx + swf - 30.f, sy + shf + 4.f, kSelAccent, 2.0f);
+            drawGdiLine(memDc, sx + swf + 4.f, sy + shf + 4.f,
+                        sx + swf + 4.f, sy + shf - 30.f, kSelAccent, 2.0f);
+
+            wchar_t label[96] = {};
+            std::swprintf(label, 96, L"%d x %d", sel.w, sel.h);
+            const float labelW = 92.f;
+            const float labelH = 26.f;
+            const float labelX = std::clamp(sx, 8.f, std::max(8.f, static_cast<float>(width) - labelW - 8.f));
+            const float labelY = sy - labelH - 8.f >= 8.f ? sy - labelH - 8.f : sy + 8.f;
+            drawGdiRoundedRectFilled(memDc, labelX + 2.f, labelY + 3.f, labelW, labelH,
+                                     6.f, { 0, 0, 0, 72 });
+            drawGdiRoundedRectFilled(memDc, labelX, labelY, labelW, labelH,
+                                     6.f, { 13, 18, 24, 236 });
+            drawGdiRoundedRectOutline(memDc, labelX, labelY, labelW, labelH,
+                                      6.f, kToolbarStroke, 1.0f);
+            drawGdiTextLabel(memDc, label, labelX, labelY, labelW, labelH,
+                             { 216, 249, 255, 255 }, 14);
+        }
 
         auto drawAnnotation = [&](const core::Annotation& ann) {
             std::visit([&](const auto& a) {
@@ -1540,8 +1696,17 @@ void Application::renderSoftwareOverlay() {
             }
         }
 
-        drawGdiRectFilled(memDc, toolbarX_, toolbarY_, toolbarW_, toolbarH_,
-                          isLongScreenshotResult_ ? kLongToolbar : kToolbarBg);
+        drawGdiRoundedRectFilled(memDc, toolbarX_ + 2.f, toolbarY_ + 4.f,
+                                 toolbarW_, toolbarH_, kCornerR, kToolbarShadow);
+        drawGdiRoundedRectFilled(memDc, toolbarX_, toolbarY_, toolbarW_, toolbarH_,
+                                 kCornerR,
+                                 isLongScreenshotResult_ ? kLongToolbar : kToolbarBg);
+        drawGdiRoundedRectOutline(memDc, toolbarX_, toolbarY_, toolbarW_, toolbarH_,
+                                  kCornerR,
+                                  isLongScreenshotResult_
+                                      ? platform::Color{ 0, 0, 0, 28 }
+                                      : kToolbarStroke,
+                                  1.0f);
         for (const auto& btn : toolButtons_) {
             const bool isSelected =
                 (btn.type == ToolButton::Type::Rectangle && activeTool_ == core::AnnotationTool::Rectangle) ||
@@ -1550,12 +1715,17 @@ void Application::renderSoftwareOverlay() {
                 (btn.type == ToolButton::Type::Freehand && activeTool_ == core::AnnotationTool::Freehand) ||
                 (btn.type == ToolButton::Type::AutoScroll && longAutoScrollActive_);
             if (isSelected) {
-                drawGdiRectFilled(memDc, btn.x, btn.y, btn.w, btn.h,
-                                  isLongScreenshotResult_
-                                      ? platform::Color{ 232, 245, 238, 255 }
-                                      : kBtnSelected);
+                drawGdiRoundedRectFilled(memDc, btn.x, btn.y, btn.w, btn.h,
+                                         kBtnCornerR,
+                                         isLongScreenshotResult_
+                                             ? platform::Color{ 255, 92, 92, 28 }
+                                             : kBtnSelected);
             } else if (btn.isHovered) {
-                drawGdiRectFilled(memDc, btn.x, btn.y, btn.w, btn.h, kBtnHover);
+                drawGdiRoundedRectFilled(memDc, btn.x, btn.y, btn.w, btn.h,
+                                         kBtnCornerR,
+                                         isLongScreenshotResult_
+                                             ? platform::Color{ 232, 235, 240, 255 }
+                                             : kBtnHover);
             }
 
             const float cx = btn.x + btn.w * 0.5f;
@@ -1566,7 +1736,10 @@ void Application::renderSoftwareOverlay() {
                    btn.type == ToolButton::Type::Confirm ? kLongConfirm :
                    btn.type == ToolButton::Type::AutoScroll && longAutoScrollActive_ ? kLongCancel :
                    platform::Color{ 76, 82, 92, 255 })
-                : kBtnIcon;
+                : (btn.type == ToolButton::Type::Cancel ? kAnnotationRed :
+                   btn.type == ToolButton::Type::Confirm ? kActionSuccess :
+                   btn.type == ToolButton::Type::Undo && !commandHistory_.canUndo() ? kBtnMuted :
+                   kBtnIcon);
             switch (btn.type) {
             case ToolButton::Type::Edit:
                 drawGdiRectOutline(memDc, btn.x + p + 2.f, btn.y + p + 2.f,
@@ -1692,6 +1865,14 @@ void Application::render() {
 
             renderDimMask(x0, y0, x1 - x0, y1 - y0);
             shapeRenderer_.drawRectOutline(x0, y0, x1 - x0, y1 - y0, kSelBorder, 2.0f);
+            shapeRenderer_.drawLine(x0 - 4.f, y0 - 4.f, x0 + 30.f, y0 - 4.f,
+                                    kSelAccent, 2.0f);
+            shapeRenderer_.drawLine(x0 - 4.f, y0 - 4.f, x0 - 4.f, y0 + 30.f,
+                                    kSelAccent, 2.0f);
+            shapeRenderer_.drawLine(x1 + 4.f, y1 + 4.f, x1 - 30.f, y1 + 4.f,
+                                    kSelAccent, 2.0f);
+            shapeRenderer_.drawLine(x1 + 4.f, y1 + 4.f, x1 + 4.f, y1 - 30.f,
+                                    kSelAccent, 2.0f);
         } else {
             renderDimMask(0.f, 0.f, 0.f, 0.f);
         }
@@ -1704,6 +1885,16 @@ void Application::render() {
 
         renderDimMask(sx, sy, ssw, ssh);
         shapeRenderer_.drawRectOutline(sx, sy, ssw, ssh, kSelBorder, 2.0f);
+        shapeRenderer_.drawLine(sx - 4.f, sy - 4.f, sx + 30.f, sy - 4.f,
+                                kSelAccent, 2.0f);
+        shapeRenderer_.drawLine(sx - 4.f, sy - 4.f, sx - 4.f, sy + 30.f,
+                                kSelAccent, 2.0f);
+        shapeRenderer_.drawLine(sx + ssw + 4.f, sy + ssh + 4.f,
+                                sx + ssw - 30.f, sy + ssh + 4.f,
+                                kSelAccent, 2.0f);
+        shapeRenderer_.drawLine(sx + ssw + 4.f, sy + ssh + 4.f,
+                                sx + ssw + 4.f, sy + ssh - 30.f,
+                                kSelAccent, 2.0f);
 
         // Draw committed annotations
         renderAnnotations();
@@ -1852,8 +2043,13 @@ void Application::renderToolbar() {
         return;
     }
 
-    // Toolbar background (rounded rect approximated as filled rect)
-    shapeRenderer_.drawRectFilled(toolbarX_, toolbarY_, toolbarW_, toolbarH_, kToolbarBg);
+    shapeRenderer_.drawRoundedRectFilled(toolbarX_ + 2.f, toolbarY_ + 4.f,
+                                         toolbarW_, toolbarH_, kCornerR,
+                                         kToolbarShadow);
+    shapeRenderer_.drawRoundedRectFilled(toolbarX_, toolbarY_, toolbarW_, toolbarH_,
+                                         kCornerR, kToolbarBg);
+    shapeRenderer_.drawRoundedRectOutline(toolbarX_, toolbarY_, toolbarW_, toolbarH_,
+                                          kCornerR, kToolbarStroke, 1.0f);
 
     for (const auto& btn : toolButtons_) {
         // Button background
@@ -1868,9 +2064,11 @@ void Application::renderToolbar() {
             activeTool_ == core::AnnotationTool::Freehand) isSelected = true;
 
         if (isSelected) {
-            shapeRenderer_.drawRectFilled(btn.x, btn.y, btn.w, btn.h, kBtnSelected);
+            shapeRenderer_.drawRoundedRectFilled(btn.x, btn.y, btn.w, btn.h,
+                                                 kBtnCornerR, kBtnSelected);
         } else if (btn.isHovered) {
-            shapeRenderer_.drawRectFilled(btn.x, btn.y, btn.w, btn.h, kBtnHover);
+            shapeRenderer_.drawRoundedRectFilled(btn.x, btn.y, btn.w, btn.h,
+                                                 kBtnCornerR, kBtnHover);
         }
 
         // Draw button icons using simple geometric shapes
@@ -1960,33 +2158,45 @@ void Application::renderToolbar() {
                                            kBtnIcon, 1.5f);
             break;
         case ToolButton::Type::Cancel:
-            // X icon
             shapeRenderer_.drawLine(btn.x + iconPad, btn.y + iconPad,
                                      btn.x + btn.w - iconPad, btn.y + btn.h - iconPad,
-                                     kBtnIcon, 2.0f);
+                                     kAnnotationRed, 2.0f);
             shapeRenderer_.drawLine(btn.x + btn.w - iconPad, btn.y + iconPad,
                                      btn.x + iconPad, btn.y + btn.h - iconPad,
-                                     kBtnIcon, 2.0f);
+                                     kAnnotationRed, 2.0f);
+            break;
+        case ToolButton::Type::Confirm:
+            shapeRenderer_.drawLine(cx - 8.f, cy + 1.f,
+                                    cx - 2.f, cy + 7.f,
+                                    kActionSuccess, 2.4f);
+            shapeRenderer_.drawLine(cx - 2.f, cy + 7.f,
+                                    cx + 10.f, cy - 7.f,
+                                    kActionSuccess, 2.4f);
             break;
         }
     }
 }
 
 void Application::renderLongScreenshotToolbar() {
-    shapeRenderer_.drawRectFilled(toolbarX_ + 2.f, toolbarY_ + 3.f,
-                                  toolbarW_, toolbarH_, { 0, 0, 0, 42 });
-    shapeRenderer_.drawRectFilled(toolbarX_, toolbarY_,
-                                  toolbarW_, toolbarH_, kLongToolbar);
+    shapeRenderer_.drawRoundedRectFilled(toolbarX_ + 2.f, toolbarY_ + 4.f,
+                                         toolbarW_, toolbarH_, kCornerR, { 0, 0, 0, 42 });
+    shapeRenderer_.drawRoundedRectFilled(toolbarX_, toolbarY_,
+                                         toolbarW_, toolbarH_, kCornerR, kLongToolbar);
+    shapeRenderer_.drawRoundedRectOutline(toolbarX_, toolbarY_,
+                                          toolbarW_, toolbarH_, kCornerR,
+                                          { 0, 0, 0, 28 }, 1.0f);
 
     for (const auto& btn : toolButtons_) {
         if (btn.type == ToolButton::Type::AutoScroll && longAutoScrollActive_) {
-            shapeRenderer_.drawRectFilled(btn.x + 2.f, btn.y + 2.f,
-                                          btn.w - 4.f, btn.h - 4.f,
-                                          { 232, 245, 238, 255 });
+            shapeRenderer_.drawRoundedRectFilled(btn.x + 2.f, btn.y + 2.f,
+                                                 btn.w - 4.f, btn.h - 4.f,
+                                                 kBtnCornerR,
+                                                 { 255, 92, 92, 30 });
         } else if (btn.isHovered) {
-            shapeRenderer_.drawRectFilled(btn.x + 2.f, btn.y + 2.f,
-                                          btn.w - 4.f, btn.h - 4.f,
-                                          { 232, 235, 240, 255 });
+            shapeRenderer_.drawRoundedRectFilled(btn.x + 2.f, btn.y + 2.f,
+                                                 btn.w - 4.f, btn.h - 4.f,
+                                                 kBtnCornerR,
+                                                 { 232, 235, 240, 255 });
         }
 
         const float cx = btn.x + btn.w * 0.5f;

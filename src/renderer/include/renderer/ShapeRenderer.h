@@ -22,9 +22,18 @@ public:
     void drawRectFilled(float x, float y, float w, float h,
                         platform::Color color);
 
+    /// Draw a filled rounded rectangle.
+    void drawRoundedRectFilled(float x, float y, float w, float h,
+                               float radius, platform::Color color);
+
     /// Draw a rectangle outline.
     void drawRectOutline(float x, float y, float w, float h,
                          platform::Color color, float thickness = 2.0f);
+
+    /// Draw a rounded rectangle outline.
+    void drawRoundedRectOutline(float x, float y, float w, float h,
+                                float radius, platform::Color color,
+                                float thickness = 2.0f);
 
     /// Draw a line segment.
     void drawLine(float x0, float y0, float x1, float y1,

@@ -159,7 +159,7 @@ private:
 
     // Annotation drawing state
     core::AnnotationTool activeTool_ = core::AnnotationTool::Rectangle;
-    platform::Color annotationColor_ = { 255, 68, 68, 255 }; // #FF4444
+    platform::Color annotationColor_ = { 255, 92, 92, 255 };
     float annotationThickness_ = 2.0f;
     bool isDrawingAnnotation_ = false;
     float annStartX_ = 0.f, annStartY_ = 0.f;

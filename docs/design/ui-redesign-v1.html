@@ -1,0 +1,575 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CrossPlatformScreenshot UI Redesign V1</title>
+  <style>
+    :root {
+      --bg0: #071015;
+      --bg1: #10212b;
+      --glass: rgba(18, 24, 31, .84);
+      --glass-strong: rgba(13, 18, 24, .92);
+      --glass-line: rgba(255, 255, 255, .13);
+      --text: #f7fafc;
+      --muted: #a7b0bc;
+      --cyan: #38bdf8;
+      --mint: #5eead4;
+      --coral: #ff5c5c;
+      --green: #22c55e;
+      --amber: #f59e0b;
+      --shadow: 0 18px 48px rgba(0, 0, 0, .38);
+      --r6: 6px;
+      --r8: 8px;
+      font-family: "Microsoft YaHei UI", "Segoe UI", Arial, sans-serif;
+      color: var(--text);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: #0a0f14;
+    }
+    .page {
+      display: grid;
+      gap: 28px;
+      padding: 28px;
+    }
+    .hero {
+      display: grid;
+      grid-template-columns: 72px 1fr auto;
+      gap: 18px;
+      align-items: center;
+      max-width: 1280px;
+      margin: 0 auto;
+      width: 100%;
+    }
+    .hero img {
+      width: 72px;
+      height: 72px;
+      border-radius: 18px;
+      box-shadow: var(--shadow);
+    }
+    h1 {
+      margin: 0 0 5px;
+      font-size: 28px;
+      line-height: 1.15;
+      letter-spacing: 0;
+    }
+    .subtitle {
+      color: var(--muted);
+      font-size: 14px;
+    }
+    .badge {
+      height: 34px;
+      display: inline-flex;
+      align-items: center;
+      padding: 0 12px;
+      border: 1px solid rgba(94, 234, 212, .28);
+      border-radius: var(--r6);
+      color: #bffcf4;
+      background: rgba(94, 234, 212, .08);
+      font-size: 13px;
+    }
+    .board {
+      max-width: 1280px;
+      width: 100%;
+      margin: 0 auto;
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 22px;
+    }
+    .shot {
+      position: relative;
+      height: 720px;
+      overflow: hidden;
+      border: 1px solid rgba(255, 255, 255, .10);
+      border-radius: var(--r8);
+      background:
+        linear-gradient(90deg, rgba(255,255,255,.06) 1px, transparent 1px) 0 0 / 64px 64px,
+        linear-gradient(rgba(255,255,255,.05) 1px, transparent 1px) 0 0 / 64px 64px,
+        radial-gradient(circle at 18% 12%, #244f58 0, transparent 28%),
+        radial-gradient(circle at 82% 18%, #292452 0, transparent 28%),
+        linear-gradient(135deg, var(--bg1), var(--bg0));
+      box-shadow: var(--shadow);
+    }
+    .mock-window {
+      position: absolute;
+      inset: 82px 118px 98px 132px;
+      border: 1px solid rgba(255,255,255,.12);
+      border-radius: var(--r8);
+      overflow: hidden;
+      background: #eff4f8;
+      color: #16202a;
+      box-shadow: 0 18px 50px rgba(0,0,0,.28);
+    }
+    .window-top {
+      height: 42px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 0 14px;
+      background: #ffffff;
+      border-bottom: 1px solid #dfe6ee;
+    }
+    .dot { width: 10px; height: 10px; border-radius: 50%; }
+    .dot.red { background: #ff6b6b; }
+    .dot.yellow { background: #f6c85f; }
+    .dot.green { background: #4cd964; }
+    .window-content {
+      display: grid;
+      grid-template-columns: 220px 1fr;
+      min-height: calc(100% - 42px);
+    }
+    .sidebar {
+      padding: 18px;
+      background: #f7fafc;
+      border-right: 1px solid #dfe6ee;
+    }
+    .nav-line, .content-line {
+      height: 10px;
+      border-radius: 999px;
+      background: #c9d5df;
+      margin-bottom: 13px;
+    }
+    .nav-line:nth-child(2) { width: 78%; }
+    .nav-line:nth-child(3) { width: 62%; }
+    .content {
+      padding: 28px;
+      display: grid;
+      gap: 16px;
+      align-content: start;
+    }
+    .card-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+    .content-card {
+      min-height: 108px;
+      border: 1px solid #dfe6ee;
+      border-radius: var(--r8);
+      background: #fff;
+      padding: 16px;
+    }
+    .content-line:nth-child(1) { width: 92%; }
+    .content-line:nth-child(2) { width: 66%; }
+    .dim {
+      position: absolute;
+      inset: 0;
+      background: rgba(4, 8, 12, .66);
+      pointer-events: none;
+    }
+    .selection {
+      position: absolute;
+      left: 292px;
+      top: 156px;
+      width: 668px;
+      height: 374px;
+      box-shadow: 0 0 0 9999px rgba(4, 8, 12, .66);
+      border: 2px solid var(--cyan);
+    }
+    .selection::before,
+    .selection::after {
+      content: "";
+      position: absolute;
+      inset: -6px;
+      border: 2px solid transparent;
+      pointer-events: none;
+    }
+    .selection::before {
+      border-left-color: var(--mint);
+      border-top-color: var(--mint);
+      width: 32px;
+      height: 32px;
+    }
+    .selection::after {
+      left: auto;
+      top: auto;
+      right: -6px;
+      bottom: -6px;
+      border-right-color: var(--mint);
+      border-bottom-color: var(--mint);
+      width: 32px;
+      height: 32px;
+    }
+    .measure {
+      position: absolute;
+      left: -2px;
+      top: -34px;
+      height: 26px;
+      padding: 0 10px;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      border-radius: var(--r6);
+      background: var(--glass-strong);
+      border: 1px solid var(--glass-line);
+      color: #d8f9ff;
+      font-size: 12px;
+      box-shadow: var(--shadow);
+    }
+    .toolbar {
+      position: absolute;
+      right: 0;
+      bottom: -58px;
+      height: 46px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px;
+      border-radius: var(--r8);
+      background: var(--glass);
+      border: 1px solid var(--glass-line);
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(18px);
+    }
+    .divider {
+      width: 1px;
+      height: 24px;
+      background: rgba(255,255,255,.13);
+      margin: 0 2px;
+    }
+    .tool {
+      width: 34px;
+      height: 34px;
+      border: 0;
+      border-radius: var(--r6);
+      display: grid;
+      place-items: center;
+      color: #dfe7ee;
+      background: transparent;
+      padding: 0;
+    }
+    .tool.active {
+      background: linear-gradient(180deg, rgba(56,189,248,.28), rgba(56,189,248,.16));
+      color: #eafdff;
+      box-shadow: inset 0 0 0 1px rgba(94,234,212,.28);
+    }
+    .tool:hover { background: rgba(255,255,255,.10); }
+    .tool.danger { color: #ff8a8a; }
+    .tool.success {
+      background: rgba(34,197,94,.18);
+      color: #baf7cc;
+    }
+    .color-dot {
+      width: 18px;
+      height: 18px;
+      border-radius: 50%;
+      background: var(--coral);
+      box-shadow: 0 0 0 3px rgba(255,92,92,.18), inset 0 0 0 1px rgba(255,255,255,.45);
+    }
+    .line-width {
+      width: 28px;
+      height: 20px;
+      display: grid;
+      gap: 4px;
+      align-content: center;
+    }
+    .line-width span {
+      display: block;
+      background: currentColor;
+      border-radius: 999px;
+    }
+    .line-width span:nth-child(1) { width: 12px; height: 2px; }
+    .line-width span:nth-child(2) { width: 18px; height: 3px; }
+    .line-width span:nth-child(3) { width: 24px; height: 4px; }
+    .popover {
+      position: absolute;
+      right: 106px;
+      bottom: -145px;
+      width: 234px;
+      padding: 12px;
+      border-radius: var(--r8);
+      background: var(--glass);
+      border: 1px solid var(--glass-line);
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(18px);
+    }
+    .swatches {
+      display: grid;
+      grid-template-columns: repeat(6, 1fr);
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+    .swatch {
+      width: 24px;
+      height: 24px;
+      border-radius: 50%;
+      border: 2px solid rgba(255,255,255,.28);
+    }
+    .slider {
+      height: 28px;
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .track {
+      flex: 1;
+      height: 4px;
+      border-radius: 999px;
+      background: rgba(255,255,255,.18);
+      position: relative;
+    }
+    .track::after {
+      content: "";
+      position: absolute;
+      left: 0;
+      top: 0;
+      width: 52%;
+      height: 100%;
+      border-radius: 999px;
+      background: var(--cyan);
+    }
+    .track::before {
+      content: "";
+      position: absolute;
+      left: 52%;
+      top: 50%;
+      width: 12px;
+      height: 12px;
+      transform: translate(-50%, -50%);
+      border-radius: 50%;
+      background: #fff;
+    }
+    .magnifier {
+      position: absolute;
+      left: 990px;
+      top: 246px;
+      width: 152px;
+      padding: 10px;
+      border-radius: var(--r8);
+      background: var(--glass);
+      border: 1px solid var(--glass-line);
+      box-shadow: var(--shadow);
+    }
+    .pixels {
+      display: grid;
+      grid-template-columns: repeat(7, 1fr);
+      gap: 2px;
+      margin-bottom: 8px;
+    }
+    .px {
+      aspect-ratio: 1;
+      background: #b7d2df;
+    }
+    .px:nth-child(odd) { background: #e8f2f4; }
+    .px.center {
+      background: var(--coral);
+      box-shadow: inset 0 0 0 2px #fff;
+    }
+    .coord {
+      display: flex;
+      justify-content: space-between;
+      color: var(--muted);
+      font-size: 11px;
+    }
+    .ann-arrow {
+      position: absolute;
+      left: 488px;
+      top: 300px;
+      width: 245px;
+      height: 110px;
+      pointer-events: none;
+    }
+    .text-tag {
+      position: absolute;
+      left: 720px;
+      top: 228px;
+      height: 34px;
+      padding: 0 12px;
+      display: flex;
+      align-items: center;
+      border: 2px solid var(--coral);
+      color: #fff;
+      background: rgba(255,92,92,.16);
+      font-weight: 700;
+      font-size: 14px;
+    }
+    .long-mode .selection {
+      border-color: var(--coral);
+      box-shadow: 0 0 0 9999px rgba(4, 8, 12, .70);
+    }
+    .long-mode .selection::before,
+    .long-mode .selection::after {
+      border-color: transparent;
+    }
+    .thumb {
+      position: absolute;
+      left: -138px;
+      top: -18px;
+      width: 104px;
+      height: 444px;
+      border-radius: var(--r8);
+      background: rgba(247, 250, 252, .96);
+      box-shadow: var(--shadow);
+      padding: 8px;
+    }
+    .thumb-inner {
+      height: 100%;
+      border-radius: var(--r6);
+      background:
+        linear-gradient(#e5edf2 0 16%, #ffffff 16% 32%, #d8e8ef 32% 48%, #ffffff 48% 66%, #eaf2f5 66% 100%);
+      position: relative;
+      overflow: hidden;
+    }
+    .viewport {
+      position: absolute;
+      left: -4px;
+      right: -4px;
+      bottom: 52px;
+      height: 118px;
+      border: 3px solid #ffffff;
+      box-shadow: 0 0 0 2px var(--cyan);
+      border-radius: var(--r6);
+    }
+    .long-hint {
+      position: absolute;
+      left: 50%;
+      top: -46px;
+      transform: translateX(-50%);
+      height: 34px;
+      padding: 0 16px;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      border-radius: var(--r6);
+      color: #fff7e5;
+      background: rgba(93, 65, 18, .78);
+      border: 1px solid rgba(245,158,11,.32);
+      font-size: 13px;
+      box-shadow: var(--shadow);
+      white-space: nowrap;
+    }
+    .long-toolbar {
+      background: rgba(247,250,252,.94);
+      color: #313b45;
+      border-color: rgba(0,0,0,.10);
+    }
+    .long-toolbar .tool { color: #4b5563; }
+    .long-toolbar .tool.active {
+      background: rgba(255,92,92,.12);
+      color: var(--coral);
+      box-shadow: inset 0 0 0 1px rgba(255,92,92,.25);
+    }
+    .long-toolbar .divider { background: rgba(0,0,0,.12); }
+    .caption {
+      color: #dbe7ee;
+      font-size: 15px;
+      line-height: 1.7;
+      max-width: 1280px;
+      margin: -8px auto 0;
+    }
+    svg { display: block; }
+    @media (max-width: 900px) {
+      .page { padding: 18px; }
+      .hero { grid-template-columns: 56px 1fr; }
+      .hero img { width: 56px; height: 56px; }
+      .badge { grid-column: 1 / -1; width: fit-content; }
+      .shot { height: 560px; }
+      .mock-window { inset: 56px 36px 84px 42px; }
+      .selection { left: 88px; top: 130px; width: calc(100% - 154px); height: 280px; }
+      .toolbar { right: auto; left: 0; bottom: -58px; }
+      .popover, .magnifier { display: none; }
+      .thumb { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <header class="hero">
+      <img src="assets/app-icon.svg" alt="CrossPlatformScreenshot 图标">
+      <div>
+        <h1>Focus Frame UI Redesign V1</h1>
+        <div class="subtitle">为 CrossPlatformScreenshot 设计的高保真叠层界面方案：截图、标注、长截图和图标体系。</div>
+      </div>
+      <div class="badge">Proposal only, no production UI changed</div>
+    </header>
+
+    <main class="board">
+      <section class="shot" aria-label="标注态高保真界面">
+        <div class="mock-window">
+          <div class="window-top"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span></div>
+          <div class="window-content">
+            <div class="sidebar"><div class="nav-line"></div><div class="nav-line"></div><div class="nav-line"></div></div>
+            <div class="content">
+              <div class="content-line"></div><div class="content-line"></div>
+              <div class="card-row"><div class="content-card"></div><div class="content-card"></div><div class="content-card"></div></div>
+              <div class="content-line"></div><div class="content-line"></div><div class="content-line"></div>
+            </div>
+          </div>
+        </div>
+        <div class="selection">
+          <div class="measure">832 x 468 <span style="color:#7dd3fc">x:292 y:156</span></div>
+          <svg class="ann-arrow" viewBox="0 0 245 110" aria-hidden="true">
+            <path d="M12 92 C74 16 142 12 215 57" fill="none" stroke="#ff5c5c" stroke-width="7" stroke-linecap="round"/>
+            <path d="M216 57 L187 45 L198 76 Z" fill="#ff5c5c"/>
+          </svg>
+          <div class="text-tag">重点区域</div>
+          <div class="toolbar" role="toolbar" aria-label="截图标注工具栏">
+            <button class="tool active" title="矩形"><svg width="20" height="20" viewBox="0 0 24 24"><rect x="5" y="6" width="14" height="12" rx="1" fill="none" stroke="currentColor" stroke-width="2"/></svg></button>
+            <button class="tool" title="箭头"><svg width="20" height="20" viewBox="0 0 24 24"><path d="M6 18L18 6M10 6h8v8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+            <button class="tool" title="直线"><svg width="20" height="20" viewBox="0 0 24 24"><path d="M5 19L19 5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></button>
+            <button class="tool" title="画笔"><svg width="20" height="20" viewBox="0 0 24 24"><path d="M4 17c4-8 6 2 10-6 2-4 4-5 6-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></button>
+            <button class="tool" title="文字"><svg width="20" height="20" viewBox="0 0 24 24"><path d="M5 6h14M12 6v13M9 19h6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></button>
+            <div class="divider"></div>
+            <button class="tool" title="颜色"><span class="color-dot"></span></button>
+            <button class="tool" title="线宽"><span class="line-width"><span></span><span></span><span></span></span></button>
+            <div class="divider"></div>
+            <button class="tool" title="长截图"><svg width="20" height="20" viewBox="0 0 24 24"><path d="M8 4h8M8 20h8M12 5v12m0 0l-4-4m4 4l4-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+            <button class="tool" title="撤销"><svg width="20" height="20" viewBox="0 0 24 24"><path d="M9 8H5v4M5 8c3-3 8-4 12-1 3 2 4 6 2 9" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+            <button class="tool" title="保存"><svg width="20" height="20" viewBox="0 0 24 24"><path d="M12 4v10m0 0l-4-4m4 4l4-4M5 20h14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+            <button class="tool" title="复制"><svg width="20" height="20" viewBox="0 0 24 24"><rect x="8" y="8" width="11" height="11" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><path d="M5 15V6a1 1 0 0 1 1-1h9" fill="none" stroke="currentColor" stroke-width="2"/></svg></button>
+            <button class="tool danger" title="取消"><svg width="20" height="20" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></button>
+            <button class="tool success" title="完成"><svg width="20" height="20" viewBox="0 0 24 24"><path d="M5 12l5 5L20 7" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+          </div>
+          <div class="popover" aria-label="颜色和线宽浮层">
+            <div class="swatches">
+              <span class="swatch" style="background:#ff5c5c"></span><span class="swatch" style="background:#f59e0b"></span><span class="swatch" style="background:#22c55e"></span><span class="swatch" style="background:#38bdf8"></span><span class="swatch" style="background:#a78bfa"></span><span class="swatch" style="background:#ffffff"></span>
+              <span class="swatch" style="background:#111827"></span><span class="swatch" style="background:#ef4444"></span><span class="swatch" style="background:#84cc16"></span><span class="swatch" style="background:#06b6d4"></span><span class="swatch" style="background:#f472b6"></span><span class="swatch" style="background:#f8fafc"></span>
+            </div>
+            <div class="slider"><span>1px</span><span class="track"></span><span>8px</span></div>
+          </div>
+        </div>
+        <div class="magnifier">
+          <div class="pixels">
+            <span class="px"></span><span class="px"></span><span class="px"></span><span class="px"></span><span class="px"></span><span class="px"></span><span class="px"></span>
+            <span class="px"></span><span class="px"></span><span class="px"></span><span class="px"></span><span class="px"></span><span class="px"></span><span class="px"></span>
+            <span class="px"></span><span class="px"></span><span class="px"></span><span class="px center"></span><span class="px"></span><span class="px"></span><span class="px"></span>
+            <span class="px"></span><span class="px"></span><span class="px"></span><span class="px"></span><span class="px"></span><span class="px"></span><span class="px"></span>
+            <span class="px"></span><span class="px"></span><span class="px"></span><span class="px"></span><span class="px"></span><span class="px"></span><span class="px"></span>
+            <span class="px"></span><span class="px"></span><span class="px"></span><span class="px"></span><span class="px"></span><span class="px"></span><span class="px"></span>
+            <span class="px"></span><span class="px"></span><span class="px"></span><span class="px"></span><span class="px"></span><span class="px"></span><span class="px"></span>
+          </div>
+          <div class="coord"><span>#FF5C5C</span><span>1042, 281</span></div>
+        </div>
+      </section>
+      <p class="caption">标注态重点：选区边框和尺寸标签先建立空间感；工具栏按绘制、样式、操作分组；完成、取消、复制、保存有清晰语义，避免所有按钮长得一样。</p>
+
+      <section class="shot long-mode" aria-label="长截图态高保真界面">
+        <div class="mock-window">
+          <div class="window-top"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span></div>
+          <div class="window-content">
+            <div class="sidebar"><div class="nav-line"></div><div class="nav-line"></div><div class="nav-line"></div></div>
+            <div class="content">
+              <div class="content-line"></div><div class="content-line"></div>
+              <div class="card-row"><div class="content-card"></div><div class="content-card"></div><div class="content-card"></div></div>
+              <div class="content-line"></div><div class="content-line"></div><div class="content-line"></div>
+            </div>
+          </div>
+        </div>
+        <div class="selection">
+          <div class="long-hint">滚动页面继续采集</div>
+          <div class="thumb"><div class="thumb-inner"><div class="viewport"></div></div></div>
+          <div class="toolbar long-toolbar">
+            <button class="tool" title="编辑"><svg width="20" height="20" viewBox="0 0 24 24"><rect x="5" y="5" width="14" height="14" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><path d="M9 15l6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></button>
+            <button class="tool active" title="停止自动滚动"><svg width="20" height="20" viewBox="0 0 24 24"><rect x="7" y="6" width="4" height="12" rx="1" fill="currentColor"/><rect x="13" y="6" width="4" height="12" rx="1" fill="currentColor"/></svg></button>
+            <button class="tool" title="保存"><svg width="20" height="20" viewBox="0 0 24 24"><path d="M12 4v10m0 0l-4-4m4 4l4-4M5 20h14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+            <button class="tool danger" title="取消"><svg width="20" height="20" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></button>
+            <button class="tool success" title="完成"><svg width="20" height="20" viewBox="0 0 24 24"><path d="M5 12l5 5L20 7" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+          </div>
+        </div>
+      </section>
+      <p class="caption">长截图态重点：用 coral 区分普通截图态；缩略图轨道显示拼接进度；工具栏变短，只保留当前任务必要动作。</p>
+    </main>
+  </div>
+</body>
+</html>
