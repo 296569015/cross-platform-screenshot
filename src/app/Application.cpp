@@ -21,6 +21,8 @@
 #include <thread>
 #include <chrono>
 #include <algorithm>
+#include <array>
+#include <utility>
 
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -76,6 +78,7 @@ static constexpr int kLongMaxFrames = 18;
 static constexpr int kLongScrollNotches = 3;
 static constexpr int kLongMaxOutputHeight = 16000;
 static constexpr int kLongCaptureDelayMs = 110;
+static constexpr int kLongNativePassthroughCaptureDelayMs = 180;
 static constexpr int kLongTrailingCaptureDelayMs = 260;
 static constexpr int kLongMinCaptureIntervalMs = 120;
 static constexpr int kLongPreviewMargin = 72;
@@ -497,6 +500,10 @@ int Application::run() {
         auto state = stateMachine_.currentState();
 
         if (state != core::AppState::Idle) {
+            if (isLongCaptureActive_) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(8));
+                continue;
+            }
             // Active overlay — render at vsync rate (no manual sleep)
             render();
         } else {
@@ -912,7 +919,9 @@ void Application::onMouseEvent(const platform::MouseEvent& evt) {
         }
 
         if (isLongCaptureActive_ && evt.type == platform::MouseEvent::Type::Scroll) {
-            handleLongScreenshotScroll(evt.scrollDelta, evt.position);
+            handleLongScreenshotScroll(evt.scrollDelta,
+                                       evt.position,
+                                       evt.nativePassthrough);
             return;
         }
 
@@ -983,14 +992,47 @@ void Application::buildToolbar() {
         const float totalW = numButtons * kLongToolbarBtnSize;
         const float totalH = kLongToolbarBtnSize;
         const auto anchor = longScreenshotSourceRegion_.w > 0 ? longScreenshotSourceRegion_ : sel;
-        float tx = static_cast<float>(anchor.x + anchor.w) - totalW;
-        float ty = static_cast<float>(anchor.y + anchor.h) + 10.f;
-
         const float sw = static_cast<float>(screenSize_.w);
         const float sh = static_cast<float>(screenSize_.h);
-        tx = std::clamp(tx, 8.f, std::max(8.f, sw - totalW - 8.f));
-        if (ty + totalH > sh - 10.f) {
-            ty = static_cast<float>(anchor.y + anchor.h) - totalH - 14.f;
+        const float ax = static_cast<float>(anchor.x);
+        const float ay = static_cast<float>(anchor.y);
+        const float aw = static_cast<float>(anchor.w);
+        const float ah = static_cast<float>(anchor.h);
+
+        auto intersectsAnchor = [&](float x, float y) {
+            return x < ax + aw && x + totalW > ax &&
+                   y < ay + ah && y + totalH > ay;
+        };
+        auto fits = [&](float x, float y) {
+            return x >= 8.f && y >= 8.f &&
+                   x + totalW <= sw - 8.f &&
+                   y + totalH <= sh - 8.f &&
+                   !intersectsAnchor(x, y);
+        };
+
+        const float rightAligned = std::clamp(ax + aw - totalW, 8.f, std::max(8.f, sw - totalW - 8.f));
+        const float centeredY = std::clamp(ay + (ah - totalH) * 0.5f, 8.f, std::max(8.f, sh - totalH - 8.f));
+        const std::array<std::pair<float, float>, 4> candidates = {{
+            { rightAligned, ay + ah + 10.f },
+            { rightAligned, ay - totalH - 10.f },
+            { ax + aw + 12.f, centeredY },
+            { ax - totalW - 12.f, centeredY },
+        }};
+
+        float tx = candidates[0].first;
+        float ty = candidates[0].second;
+        bool placedOutsideSource = false;
+        for (const auto& candidate : candidates) {
+            if (fits(candidate.first, candidate.second)) {
+                tx = candidate.first;
+                ty = candidate.second;
+                placedOutsideSource = true;
+                break;
+            }
+        }
+        if (!placedOutsideSource) {
+            tx = rightAligned;
+            ty = std::clamp(ay + ah + 10.f, 8.f, std::max(8.f, sh - totalH - 8.f));
         }
 
         toolbarX_ = tx;
@@ -1379,13 +1421,8 @@ void Application::renderSoftwareOverlay() {
             const float visibleV = capturedH_ > 0
                 ? std::clamp(ph / (static_cast<float>(capturedH_) * previewScale), 0.0f, 1.0f)
                 : 1.0f;
-            const int visibleRows = std::max(1, static_cast<int>(std::round(capturedH_ * visibleV)));
-            const int visibleStart = std::max(0, capturedH_ - visibleRows);
-
             drawGdiRectFilled(memDc, px - 2.f, py - 2.f, pw + 4.f, ph + 4.f,
                               { 255, 255, 255, 245 });
-            drawRgbaPixelsScaled(capturedPixels_, capturedW_, capturedH_,
-                                 visibleStart, visibleRows, px, py, pw, ph);
 
             const float thumbMaxH = std::min(static_cast<float>(height) - 32.f,
                                              std::max(ph, ph + 96.f));
@@ -1419,16 +1456,19 @@ void Application::renderSoftwareOverlay() {
             const float hintW = 270.f;
             const float hintH = 34.f;
             const float hintX = px + (pw - hintW) * 0.5f;
-            const float hintY = py - hintH - 10.f >= 8.f ? py - hintH - 10.f : py + 10.f;
-            drawGdiRectFilled(memDc, hintX, hintY, hintW, hintH, kLongHintBg);
-            SetTextColor(memDc, RGB(255, 255, 255));
-            RECT hintRect = {
-                static_cast<LONG>(std::round(hintX + 18.f)),
-                static_cast<LONG>(std::round(hintY + 7.f)),
-                static_cast<LONG>(std::round(hintX + hintW - 18.f)),
-                static_cast<LONG>(std::round(hintY + hintH))
-            };
-            DrawTextW(memDc, hint, -1, &hintRect, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+            const bool hintAbove = py - hintH - 10.f >= 8.f;
+            if (hintAbove) {
+                const float hintY = py - hintH - 10.f;
+                drawGdiRectFilled(memDc, hintX, hintY, hintW, hintH, kLongHintBg);
+                SetTextColor(memDc, RGB(255, 255, 255));
+                RECT hintRect = {
+                    static_cast<LONG>(std::round(hintX + 18.f)),
+                    static_cast<LONG>(std::round(hintY + 7.f)),
+                    static_cast<LONG>(std::round(hintX + hintW - 18.f)),
+                    static_cast<LONG>(std::round(hintY + hintH))
+                };
+                DrawTextW(memDc, hint, -1, &hintRect, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+            }
         }
 
         drawGdiRectOutline(memDc, static_cast<float>(sel.x), static_cast<float>(sel.y),
@@ -1764,24 +1804,22 @@ void Application::renderLongScreenshotUi() {
     shapeRenderer_.drawRectFilled(px - 2.f, py - 2.f,
                                   pw + 4.f, ph + 4.f,
                                   { 255, 255, 255, 245 });
-    const float visibleStartV = std::max(0.f, 1.f - visibleV);
-    spriteBatch_.drawQuad(screenshotTexture_, px, py, pw, ph,
-                          0.f, visibleStartV, 1.f, 1.f);
 
     const bool hasHint = ensureLongHintTexture();
     const float hintW = hasHint ? static_cast<float>(longHintTextW_ + 42) : 260.f;
     const float hintH = 34.f;
     const float hintX = px + (pw - hintW) * 0.5f;
-    const float hintY = py - hintH - 10.f >= 8.f
-        ? py - hintH - 10.f
-        : py + 10.f;
-    shapeRenderer_.drawRectFilled(hintX, hintY, hintW, hintH, kLongHintBg);
-    if (hasHint) {
-        spriteBatch_.drawQuad(longHintTextTexture_,
-                              hintX + 21.f,
-                              hintY + (hintH - longHintTextH_) * 0.5f,
-                              static_cast<float>(longHintTextW_),
-                              static_cast<float>(longHintTextH_));
+    const bool hintAbove = py - hintH - 10.f >= 8.f;
+    if (hintAbove) {
+        const float hintY = py - hintH - 10.f;
+        shapeRenderer_.drawRectFilled(hintX, hintY, hintW, hintH, kLongHintBg);
+        if (hasHint) {
+            spriteBatch_.drawQuad(longHintTextTexture_,
+                                  hintX + 21.f,
+                                  hintY + (hintH - longHintTextH_) * 0.5f,
+                                  static_cast<float>(longHintTextW_),
+                                  static_cast<float>(longHintTextH_));
+        }
     }
 
     renderLongScreenshotToolbar();
@@ -2080,6 +2118,65 @@ platform::Rect Application::fitLongPreviewRect(int imageW, int imageH) const {
     };
 }
 
+std::vector<platform::Rect> Application::longScreenshotOverlayRegions() const {
+    std::vector<platform::Rect> regions;
+    auto addPadded = [&](float x, float y, float w, float h, int pad) {
+        const int ix = static_cast<int>(std::floor(x)) - pad;
+        const int iy = static_cast<int>(std::floor(y)) - pad;
+        const int iw = static_cast<int>(std::ceil(w)) + pad * 2;
+        const int ih = static_cast<int>(std::ceil(h)) + pad * 2;
+        if (iw > 0 && ih > 0) {
+            regions.push_back({ ix, iy, iw, ih });
+        }
+    };
+
+    if (toolbarW_ > 0.f && toolbarH_ > 0.f) {
+        addPadded(toolbarX_, toolbarY_, toolbarW_, toolbarH_, 4);
+    }
+
+    const auto preview = longScreenshotSourceRegion_.w > 0 && longScreenshotSourceRegion_.h > 0
+        ? longScreenshotSourceRegion_
+        : stateMachine_.selectedRegion();
+    if (preview.w <= 0 || preview.h <= 0 || capturedW_ <= 0 || capturedH_ <= 0) {
+        return regions;
+    }
+
+    const float sw = static_cast<float>(screenSize_.w);
+    const float sh = static_cast<float>(screenSize_.h);
+    const float px = static_cast<float>(preview.x);
+    const float py = static_cast<float>(preview.y);
+    const float pw = static_cast<float>(preview.w);
+    const float ph = static_cast<float>(preview.h);
+
+    const float thumbMaxH = std::min(sh - 32.f, std::max(ph, ph + 96.f));
+    const float thumbH = std::max(160.f, thumbMaxH);
+    const float thumbW = std::clamp(
+        thumbH * static_cast<float>(capturedW_) / std::max(1, capturedH_),
+        72.f, 132.f);
+    const float gap = 18.f;
+    const float thumbX = px - thumbW - gap >= 8.f
+        ? px - thumbW - gap
+        : std::min(sw - thumbW - 8.f, px + pw + gap);
+    const float thumbY = std::clamp(
+        py + (ph - thumbH) * 0.5f,
+        8.f,
+        std::max(8.f, sh - thumbH - 8.f));
+    addPadded(thumbX, thumbY, thumbW, thumbH, 6);
+
+    const float hintH = 34.f;
+    const bool hintAbove = py - hintH - 10.f >= 8.f;
+    if (hintAbove) {
+        const float hintW = longHintTextW_ > 0
+            ? static_cast<float>(longHintTextW_ + 42)
+            : 302.f;
+        const float hintX = px + (pw - hintW) * 0.5f;
+        const float hintY = py - hintH - 10.f;
+        addPadded(hintX, hintY, hintW, hintH, 3);
+    }
+
+    return regions;
+}
+
 bool Application::ensureLongHintTexture() {
     if (longHintTextTexture_) {
         return true;
@@ -2208,8 +2305,9 @@ bool Application::captureLongScreenshot() {
         900,
         std::max(1, selected.h - stitchOptions.minAppendRows));
     stitchOptions.reliableMatchScore = 24.0f;
-    stitchOptions.acceptableMatchScore = 30.0f;
+    stitchOptions.acceptableMatchScore = 20.0f;
     stitchOptions.ambiguousScoreGap = 2.0f;
+    stitchOptions.acceptableScoreGap = 1.0f;
     stitchOptions.appendOnUnreliableMatch = true;
     longStitcher_ = core::LongScreenshotStitcher(selected.w, stitchOptions);
     longStitcher_.start(firstFrame, selected.h);
@@ -2234,13 +2332,16 @@ bool Application::captureLongScreenshot() {
 
     stateMachine_.setSelectedRegion(fitLongPreviewRect(capturedW_, capturedH_));
     buildToolbar();
+    platform_.overlay->setPassthroughRegion(longScreenshotSourceRegion_,
+                                            longScreenshotOverlayRegions());
     std::printf("[long] Entered manual long screenshot mode (%dx%d). Scroll to capture; click check to finish.\n",
                 capturedW_, capturedH_);
     return true;
 }
 
 void Application::handleLongScreenshotScroll(float scrollDelta,
-                                             platform::Point cursorPosition) {
+                                             platform::Point cursorPosition,
+                                             bool nativePassthrough) {
     const auto started = std::chrono::steady_clock::now();
     if (!isLongCaptureActive_) {
         return;
@@ -2268,7 +2369,8 @@ void Application::handleLongScreenshotScroll(float scrollDelta,
         };
     }
 
-    if (!platform_.input->scrollAt(scrollPoint,
+    if (!nativePassthrough &&
+        !platform_.input->scrollAt(scrollPoint,
                                    wheelDelta,
                                    platform_.overlay->getNativeHandle())) {
         std::fprintf(stderr, "[long] Manual scroll forwarding failed\n");
@@ -2279,7 +2381,10 @@ void Application::handleLongScreenshotScroll(float scrollDelta,
     }
 
     const auto now = std::chrono::steady_clock::now();
-    const auto requestedDue = now + std::chrono::milliseconds(kLongCaptureDelayMs);
+    const int captureDelayMs = nativePassthrough
+        ? kLongNativePassthroughCaptureDelayMs
+        : kLongCaptureDelayMs;
+    const auto requestedDue = now + std::chrono::milliseconds(captureDelayMs);
     const auto trailingDue = now + std::chrono::milliseconds(kLongTrailingCaptureDelayMs);
     const auto intervalDue = longLastFrameCapture_ +
         std::chrono::milliseconds(kLongMinCaptureIntervalMs);
@@ -2291,7 +2396,8 @@ void Application::handleLongScreenshotScroll(float scrollDelta,
     longPendingFrameScrollAt_ = started;
     longFrameCaptureDue_ = nextDue;
     pendingLongFrameCapture_ = true;
-    writeLongScreenshotLog("scroll-forward ok seq=%llu elapsed_ms=%lld delta=%d point=%d,%d cursor=%d,%d capture_due_ms=%lld trailing_due_ms=%d",
+    writeLongScreenshotLog("%s ok seq=%llu elapsed_ms=%lld delta=%d point=%d,%d cursor=%d,%d capture_due_ms=%lld trailing_due_ms=%d",
+                           nativePassthrough ? "scroll-observed" : "scroll-forward",
                            static_cast<unsigned long long>(scrollSeq),
                            elapsedMs(started),
                            wheelDelta,
@@ -2386,6 +2492,8 @@ bool Application::appendLongScreenshotFrame() {
         const auto uploadMs = elapsedMs(uploadStarted);
         stateMachine_.setSelectedRegion(fitLongPreviewRect(capturedW_, capturedH_));
         buildToolbar();
+        platform_.overlay->setPassthroughRegion(longScreenshotSourceRegion_,
+                                                longScreenshotOverlayRegions());
         writeLongScreenshotLog("append ok seq=%llu event_to_append_ms=%lld source=%s reliable=%d allow_acceptable=%d appended_rows=%d overlap=%d score=%.2f second=%.2f gap=%.2f stitch_ms=%lld upload_ms=%lld total_ms=%lld output=%dx%d frame=%dx%d",
                                static_cast<unsigned long long>(scrollSeq),
                                scrollSeq ? elapsedMs(scrollAt) : -1,
@@ -2436,6 +2544,7 @@ void Application::finishLongScreenshotMode() {
     isLongCaptureActive_ = false;
     pendingLongFrameCapture_ = false;
     longNeedsTrailingFrameCapture_ = false;
+    platform_.overlay->setPassthroughRegion(std::nullopt);
     buildToolbar();
     std::printf("[long] Manual long screenshot finished (%dx%d)\n",
                 capturedW_, capturedH_);
@@ -2449,7 +2558,9 @@ void Application::runPendingActions() {
             return;
         }
 
-        captureLongScreenshot();
+        if (captureLongScreenshot()) {
+            render();
+        }
     }
 
     if (!pendingLongFrameCapture_) {
@@ -2520,6 +2631,9 @@ void Application::runPendingActions() {
 }
 
 void Application::resetCaptureSession() {
+    if (platform_.overlay) {
+        platform_.overlay->setPassthroughRegion(std::nullopt);
+    }
     if (platform_.eglContext) {
         platform_.eglContext->makeCurrent();
     }

@@ -11,6 +11,7 @@
 #include <renderer/Framebuffer.h>
 #include <chrono>
 #include <cstdint>
+#include <vector>
 
 namespace sst::app {
 
@@ -104,11 +105,14 @@ private:
                                    int width,
                                    int height) const;
     bool captureLongScreenshot();
-    void handleLongScreenshotScroll(float scrollDelta, platform::Point cursorPosition);
+    void handleLongScreenshotScroll(float scrollDelta,
+                                    platform::Point cursorPosition,
+                                    bool nativePassthrough);
     bool appendLongScreenshotFrame();
     void finishLongScreenshotMode();
     void runPendingActions();
     platform::Rect fitLongPreviewRect(int imageW, int imageH) const;
+    std::vector<platform::Rect> longScreenshotOverlayRegions() const;
     bool ensureLongHintTexture();
     void resetCaptureSession();
 

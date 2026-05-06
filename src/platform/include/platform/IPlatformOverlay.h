@@ -2,6 +2,8 @@
 
 #include "PlatformTypes.h"
 #include <functional>
+#include <optional>
+#include <vector>
 
 namespace sst::platform {
 
@@ -25,6 +27,11 @@ public:
     /// Return the overlay's pixel dimensions (DPI-aware).
     virtual Size getSize() const = 0;
     virtual float getDpiScale() const = 0;
+
+    /// Make a region visually and interactively pass through to windows below.
+    /// Coordinates are overlay-local; pass std::nullopt to restore the full overlay.
+    virtual void setPassthroughRegion(std::optional<Rect> region,
+                                      std::vector<Rect> overlayRegions = {}) = 0;
 
     /// Register callbacks for input events.
     virtual void setMouseCallback(std::function<void(const MouseEvent&)> cb) = 0;

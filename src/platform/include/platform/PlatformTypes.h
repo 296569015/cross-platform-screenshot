@@ -69,6 +69,7 @@ struct MouseEvent {
     MouseButton button = MouseButton::Left;
     float       scrollDelta = 0;
     uint8_t     modifiers   = 0; // bitmask of KeyModifier
+    bool        nativePassthrough = false; // event was observed after being allowed to reach the target window
 };
 
 struct KeyEvent {

@@ -353,12 +353,16 @@ LongScreenshotStitchResult LongScreenshotStitcher::append(
         bestOverlap > 0 &&
         bestScore <= options_.reliableMatchScore &&
         hasClearWinner;
+    const bool acceptable =
+        bestOverlap > 0 &&
+        bestScore <= options_.acceptableMatchScore &&
+        (!std::isfinite(secondBestScore) ||
+         secondBestScore - bestScore >= options_.acceptableScoreGap);
     if (reliable) {
         appendFrom = bestOverlap;
     } else if (allowAcceptableMatch &&
                options_.appendOnUnreliableMatch &&
-               bestOverlap > 0 &&
-               bestScore <= options_.acceptableMatchScore) {
+               acceptable) {
         appendFrom = bestOverlap;
     } else {
         result.score = bestScore;

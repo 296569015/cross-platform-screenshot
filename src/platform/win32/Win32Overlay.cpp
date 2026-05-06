@@ -2,7 +2,9 @@
 #include <shellscalingapi.h>
 #include <dwmapi.h>
 #include <windowsx.h>
+#include <algorithm>
 #include <cstdio>
+#include <utility>
 
 #pragma comment(lib, "dwmapi.lib")
 #pragma comment(lib, "shcore.lib")
@@ -10,6 +12,7 @@
 namespace sst::platform::win32 {
 
 bool Win32Overlay::classRegistered_ = false;
+Win32Overlay* Win32Overlay::mouseHookOwner_ = nullptr;
 
 Win32Overlay::Win32Overlay() = default;
 
@@ -87,6 +90,18 @@ float Win32Overlay::getDpiScale() const {
     return dpiScale_;
 }
 
+void Win32Overlay::setPassthroughRegion(std::optional<Rect> region,
+                                        std::vector<Rect> overlayRegions) {
+    if (region && (region->w <= 0 || region->h <= 0)) {
+        region.reset();
+    }
+
+    passthroughRegion_ = region;
+    overlayRegions_ = std::move(overlayRegions);
+    applyWindowRegion();
+    updateMouseHook();
+}
+
 void Win32Overlay::setMouseCallback(std::function<void(const MouseEvent&)> cb) {
     mouseCallback_ = std::move(cb);
 }
@@ -127,7 +142,11 @@ bool Win32Overlay::pumpMessages() {
 }
 
 void Win32Overlay::destroy() {
+    passthroughRegion_.reset();
+    updateMouseHook();
+
     if (hwnd_) {
+        SetWindowRgn(hwnd_, nullptr, FALSE);
         DestroyWindow(hwnd_);
         hwnd_ = nullptr;
     }
@@ -149,6 +168,147 @@ LRESULT CALLBACK Win32Overlay::wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp
         return self->handleMessage(msg, wp, lp);
     }
     return DefWindowProc(hwnd, msg, wp, lp);
+}
+
+LRESULT CALLBACK Win32Overlay::lowLevelMouseProc(int code, WPARAM wp, LPARAM lp) {
+    if (mouseHookOwner_) {
+        return mouseHookOwner_->handleLowLevelMouse(code, wp, lp);
+    }
+    return CallNextHookEx(nullptr, code, wp, lp);
+}
+
+bool Win32Overlay::pointInPassthroughRegion(int x, int y) const {
+    if (!passthroughRegion_) {
+        return false;
+    }
+
+    constexpr int kVisibleBorder = 2;
+    const Rect& rect = *passthroughRegion_;
+    const int left = rect.x + kVisibleBorder;
+    const int top = rect.y + kVisibleBorder;
+    const int right = rect.x + rect.w - kVisibleBorder;
+    const int bottom = rect.y + rect.h - kVisibleBorder;
+    return x >= left && y >= top &&
+           x < right &&
+           y < bottom;
+}
+
+void Win32Overlay::applyWindowRegion() {
+    if (!hwnd_) {
+        return;
+    }
+
+    if (!passthroughRegion_) {
+        overlayRegions_.clear();
+        SetWindowRgn(hwnd_, nullptr, TRUE);
+        InvalidateRect(hwnd_, nullptr, TRUE);
+        return;
+    }
+
+    constexpr int kVisibleBorder = 2;
+    HRGN compactRegion = CreateRectRgn(0, 0, 0, 0);
+    if (!compactRegion) {
+        return;
+    }
+
+    auto addRect = [&](int x, int y, int w, int h) {
+        const int left = std::clamp(x, 0, size_.w);
+        const int top = std::clamp(y, 0, size_.h);
+        const int right = std::clamp(x + w, 0, size_.w);
+        const int bottom = std::clamp(y + h, 0, size_.h);
+        if (right <= left || bottom <= top) {
+            return;
+        }
+
+        HRGN rectRegion = CreateRectRgn(left, top, right, bottom);
+        if (!rectRegion) {
+            return;
+        }
+        CombineRgn(compactRegion, compactRegion, rectRegion, RGN_OR);
+        DeleteObject(rectRegion);
+    };
+
+    const Rect& hole = *passthroughRegion_;
+    addRect(hole.x - kVisibleBorder,
+            hole.y - kVisibleBorder,
+            hole.w + kVisibleBorder * 2,
+            kVisibleBorder);
+    addRect(hole.x - kVisibleBorder,
+            hole.y + hole.h,
+            hole.w + kVisibleBorder * 2,
+            kVisibleBorder);
+    addRect(hole.x - kVisibleBorder,
+            hole.y,
+            kVisibleBorder,
+            hole.h);
+    addRect(hole.x + hole.w,
+            hole.y,
+            kVisibleBorder,
+            hole.h);
+
+    for (const Rect& rect : overlayRegions_) {
+        addRect(rect.x, rect.y, rect.w, rect.h);
+    }
+
+    if (SetWindowRgn(hwnd_, compactRegion, TRUE) == 0) {
+        DeleteObject(compactRegion);
+    }
+    InvalidateRect(hwnd_, nullptr, TRUE);
+}
+
+void Win32Overlay::updateMouseHook() {
+    if (passthroughRegion_ && !mouseHook_) {
+        mouseHookOwner_ = this;
+        mouseHook_ = SetWindowsHookExW(
+            WH_MOUSE_LL,
+            lowLevelMouseProc,
+            GetModuleHandle(nullptr),
+            0);
+        if (!mouseHook_) {
+            std::fprintf(stderr, "[overlay] Failed to install mouse hook for passthrough region\n");
+            if (mouseHookOwner_ == this) {
+                mouseHookOwner_ = nullptr;
+            }
+        }
+        return;
+    }
+
+    if (!passthroughRegion_ && mouseHook_) {
+        UnhookWindowsHookEx(mouseHook_);
+        mouseHook_ = nullptr;
+        if (mouseHookOwner_ == this) {
+            mouseHookOwner_ = nullptr;
+        }
+    }
+}
+
+LRESULT Win32Overlay::handleLowLevelMouse(int code, WPARAM wp, LPARAM lp) {
+    if (code == HC_ACTION &&
+        wp == WM_MOUSEWHEEL &&
+        mouseCallback_ &&
+        passthroughRegion_) {
+        const auto* mouse = reinterpret_cast<const MSLLHOOKSTRUCT*>(lp);
+        POINT clientPoint = mouse->pt;
+        ScreenToClient(hwnd_, &clientPoint);
+
+        if (pointInPassthroughRegion(clientPoint.x, clientPoint.y)) {
+            MouseEvent evt;
+            evt.type = MouseEvent::Type::Scroll;
+            evt.position.x = clientPoint.x;
+            evt.position.y = clientPoint.y;
+            evt.scrollDelta = static_cast<SHORT>(HIWORD(mouse->mouseData)) / 120.0f;
+            evt.nativePassthrough = true;
+            if (GetKeyState(VK_SHIFT) & 0x8000) {
+                evt.modifiers |= static_cast<uint8_t>(KeyModifier::Shift);
+            }
+            if (GetKeyState(VK_CONTROL) & 0x8000) {
+                evt.modifiers |= static_cast<uint8_t>(KeyModifier::Ctrl);
+            }
+            mouseCallback_(evt);
+        }
+    }
+
+    return CallNextHookEx(mouseHook_, code, wp, lp);
 }
 
 LRESULT Win32Overlay::handleMessage(UINT msg, WPARAM wp, LPARAM lp) {

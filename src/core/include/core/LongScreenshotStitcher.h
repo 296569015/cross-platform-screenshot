@@ -23,6 +23,7 @@ struct LongScreenshotStitchOptions {
     float reliableMatchScore = 16.0f;
     float acceptableMatchScore = 30.0f;
     float ambiguousScoreGap = 1.5f;
+    float acceptableScoreGap = 0.0f;
     bool  appendOnUnreliableMatch = true;
 };
 
