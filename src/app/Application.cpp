@@ -12,11 +12,23 @@
 #include <GLES3/gl3.h>
 #include <cstdio>
 #include <cstdint>
+#include <cstring>
+#include <cwchar>
 #include <cmath>
 #include <vector>
 #include <thread>
 #include <chrono>
 #include <algorithm>
+
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#endif
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include <stb_image_write.h>
@@ -40,12 +52,33 @@ static const platform::Color kBtnSelected  = { 66, 133, 244, 255 }; // #4285F4
 static const platform::Color kBtnIcon      = { 220, 220, 220, 255 };// light gray icons
 static const platform::Color kSelBorder    = { 66, 133, 244, 255 }; // #4285F4
 static const platform::Color kDimColor     = { 0, 0, 0, 128 };
+static const platform::Color kLongDimColor = { 0, 0, 0, 138 };
+static const platform::Color kLongPanel    = { 246, 247, 249, 245 };
+static const platform::Color kLongToolbar  = { 255, 255, 255, 248 };
+static const platform::Color kLongHintBg   = { 98, 98, 98, 196 };
+static const platform::Color kLongCancel   = { 255, 80, 92, 255 };
+static const platform::Color kLongConfirm  = { 22, 185, 111, 255 };
+
+static constexpr int kLongMaxFrames = 18;
+static constexpr int kLongScrollNotches = 3;
+static constexpr int kLongMaxOutputHeight = 16000;
+static constexpr int kLongCaptureDelayMs = 65;
+static constexpr int kLongTrailingCaptureDelayMs = 220;
+static constexpr int kLongMinCaptureIntervalMs = 90;
+static constexpr int kLongPreviewMargin = 72;
+static constexpr float kLongToolbarBtnSize = 40.f;
 
 Application::Application() = default;
 
 Application::~Application() {
     if (screenshotTexture_) {
         glDeleteTextures(1, &screenshotTexture_);
+    }
+    if (longBackgroundTexture_) {
+        glDeleteTextures(1, &longBackgroundTexture_);
+    }
+    if (longHintTextTexture_) {
+        glDeleteTextures(1, &longHintTextTexture_);
     }
     spriteBatch_.shutdown();
     shapeRenderer_.shutdown();
@@ -68,18 +101,38 @@ bool Application::initialize() {
     auto monitors = platform_.capture->enumerateMonitors();
     std::printf("[init] Found %zu monitor(s)\n", monitors.size());
 
-    platform::Rect primaryBounds = { 0, 0, 1920, 1080 };
-    for (const auto& m : monitors) {
-        if (m.isPrimary) {
-            primaryBounds = m.bounds;
-            break;
+    platform::Rect desktopBounds = { 0, 0, 1920, 1080 };
+    if (!monitors.empty()) {
+        int left = monitors.front().bounds.x;
+        int top = monitors.front().bounds.y;
+        int right = monitors.front().bounds.x + monitors.front().bounds.w;
+        int bottom = monitors.front().bounds.y + monitors.front().bounds.h;
+        for (const auto& m : monitors) {
+            left = std::min(left, m.bounds.x);
+            top = std::min(top, m.bounds.y);
+            right = std::max(right, m.bounds.x + m.bounds.w);
+            bottom = std::max(bottom, m.bounds.y + m.bounds.h);
         }
+        desktopBounds = { left, top, right - left, bottom - top };
     }
-    screenSize_ = { primaryBounds.w, primaryBounds.h };
-    std::printf("[init] Primary monitor: %dx%d\n", screenSize_.w, screenSize_.h);
+
+#ifdef _WIN32
+    const int vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
+    const int vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
+    const int vw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+    const int vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+    if (vw > 0 && vh > 0) {
+        desktopBounds = { vx, vy, vw, vh };
+    }
+#endif
+
+    screenSize_ = { desktopBounds.w, desktopBounds.h };
+    screenBounds_ = desktopBounds;
+    std::printf("[init] Virtual desktop: origin=%d,%d size=%dx%d\n",
+                screenBounds_.x, screenBounds_.y, screenSize_.w, screenSize_.h);
 
     std::printf("[init] Creating overlay window...\n");
-    if (!platform_.overlay->create(primaryBounds)) {
+    if (!platform_.overlay->create(desktopBounds)) {
         std::fprintf(stderr, "[init] FAILED: overlay window creation\n");
         return false;
     }
@@ -117,12 +170,31 @@ bool Application::initialize() {
     platform_.overlay->setKeyCallback(
         [this](const platform::KeyEvent& evt) { onKeyEvent(evt); });
 
-    platform_.input->registerHotkey(
-        'A',
+    auto registerScreenshotHotkey = [&](const char* name,
+                                        uint32_t keyCode,
+                                        uint8_t modifiers) {
+        const auto hotkeyId = platform_.input->registerHotkey(
+            keyCode,
+            modifiers,
+            [this]() { onHotkeyTriggered(); }
+        );
+        if (hotkeyId == 0) {
+            std::fprintf(stderr, "[init] WARNING: %s hotkey registration failed\n", name);
+            return;
+        }
+        std::printf("[init] Registered hotkey: %s\n", name);
+    };
+
+    const uint8_t ctrlAlt =
         static_cast<uint8_t>(platform::KeyModifier::Ctrl) |
-        static_cast<uint8_t>(platform::KeyModifier::Shift),
-        [this]() { onHotkeyTriggered(); }
-    );
+        static_cast<uint8_t>(platform::KeyModifier::Alt);
+    const uint8_t ctrlShift =
+        static_cast<uint8_t>(platform::KeyModifier::Ctrl) |
+        static_cast<uint8_t>(platform::KeyModifier::Shift);
+
+    registerScreenshotHotkey("Ctrl+Alt+X", 'X', ctrlAlt);
+    registerScreenshotHotkey("F8", 0x77, 0);
+    registerScreenshotHotkey("Ctrl+Shift+A", 'A', ctrlShift);
 
     platform_.systemTray->create("Screenshot Tool", {
         { "Take Screenshot", [this]() { onHotkeyTriggered(); } },
@@ -132,7 +204,7 @@ bool Application::initialize() {
 
     running_ = true;
     std::printf("[init] All systems ready!\n");
-    std::printf("[info] Press Ctrl+Shift+A to take a screenshot\n");
+    std::printf("[info] Press Ctrl+Alt+X or F8 to take a screenshot\n");
     std::printf("[info] Right-click tray icon for menu\n");
     return true;
 }
@@ -144,6 +216,8 @@ int Application::run() {
         if (!platform_.overlay->pumpMessages()) {
             break;
         }
+
+        runPendingActions();
 
         auto state = stateMachine_.currentState();
 
@@ -182,12 +256,38 @@ void Application::onHotkeyTriggered() {
 
 // ── Capture ─────────────────────────────────────────────────────
 bool Application::captureScreen() {
+    resetCaptureSession();
+#ifdef _WIN32
+    if (!captureFramePixelsGdi(capturedPixels_, capturedW_, capturedH_,
+                               { 0, 0, screenSize_.w, screenSize_.h }) &&
+        !captureFramePixels(capturedPixels_, capturedW_, capturedH_, 500)) {
+        return false;
+    }
+#else
+    if (!captureFramePixels(capturedPixels_, capturedW_, capturedH_, 500)) {
+        return false;
+    }
+#endif
+
+    if (!uploadScreenshotTexture()) {
+        return false;
+    }
+
+    std::printf("[capture] GL texture = %u (%dx%d) via CPU readback\n",
+                screenshotTexture_, capturedW_, capturedH_);
+    return true;
+}
+
+bool Application::captureFramePixels(std::vector<uint8_t>& outPixels,
+                                     int& outW,
+                                     int& outH,
+                                     uint32_t timeoutMs) {
     platform::CapturedFrame frame;
     platform::CaptureError error;
 
     bool captured = false;
     for (int attempt = 0; attempt < 3; ++attempt) {
-        if (platform_.capture->acquireFrame(frame, error, 500)) {
+        if (platform_.capture->acquireFrame(frame, error, timeoutMs)) {
             captured = true;
             break;
         }
@@ -200,13 +300,118 @@ bool Application::captureScreen() {
     }
 
     // Read frame pixels to CPU (BGRA -> RGBA)
-    if (!platform_.capture->readFramePixels(capturedPixels_, capturedW_, capturedH_)) {
+    if (!platform_.capture->readFramePixels(outPixels, outW, outH)) {
         std::fprintf(stderr, "[capture] Failed to read frame pixels\n");
         platform_.capture->releaseFrame();
         return false;
     }
 
     platform_.capture->releaseFrame();
+    return true;
+}
+
+bool Application::captureLongFramePixels(std::vector<uint8_t>& outPixels,
+                                         int& outW,
+                                         int& outH,
+                                         platform::Rect region) {
+#ifdef _WIN32
+    if (captureFramePixelsGdi(outPixels, outW, outH, region)) {
+        return true;
+    }
+    std::fprintf(stderr, "[long] GDI visible capture failed; falling back to DXGI\n");
+#endif
+
+    std::vector<uint8_t> fullPixels;
+    int fullW = 0, fullH = 0;
+    if (!captureFramePixels(fullPixels, fullW, fullH, 250)) {
+        return false;
+    }
+
+    outPixels = cropPixels(fullPixels, fullW, fullH, region);
+    outW = std::min(std::max(0, region.w), std::max(0, fullW - std::max(0, region.x)));
+    outH = std::min(std::max(0, region.h), std::max(0, fullH - std::max(0, region.y)));
+    return !outPixels.empty();
+}
+
+#ifdef _WIN32
+bool Application::captureFramePixelsGdi(std::vector<uint8_t>& outPixels,
+                                        int& outW,
+                                        int& outH,
+                                        platform::Rect region) {
+    const int sx = std::clamp(region.x, 0, screenSize_.w);
+    const int sy = std::clamp(region.y, 0, screenSize_.h);
+    outW = std::min(std::max(0, region.w), std::max(0, screenSize_.w - sx));
+    outH = std::min(std::max(0, region.h), std::max(0, screenSize_.h - sy));
+    if (outW <= 0 || outH <= 0) {
+        return false;
+    }
+
+    HDC screenDc = GetDC(nullptr);
+    if (!screenDc) {
+        return false;
+    }
+
+    HDC memDc = CreateCompatibleDC(screenDc);
+    if (!memDc) {
+        ReleaseDC(nullptr, screenDc);
+        return false;
+    }
+
+    BITMAPINFO bmi = {};
+    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bmi.bmiHeader.biWidth = outW;
+    bmi.bmiHeader.biHeight = -outH;
+    bmi.bmiHeader.biPlanes = 1;
+    bmi.bmiHeader.biBitCount = 32;
+    bmi.bmiHeader.biCompression = BI_RGB;
+
+    void* bits = nullptr;
+    HBITMAP bitmap = CreateDIBSection(screenDc, &bmi, DIB_RGB_COLORS, &bits, nullptr, 0);
+    if (!bitmap || !bits) {
+        DeleteDC(memDc);
+        ReleaseDC(nullptr, screenDc);
+        return false;
+    }
+
+    HGDIOBJ oldBitmap = SelectObject(memDc, bitmap);
+    const BOOL copied = BitBlt(memDc, 0, 0, outW, outH,
+                               screenDc, screenBounds_.x + sx, screenBounds_.y + sy,
+                               SRCCOPY);
+
+    outPixels.clear();
+    if (copied) {
+        outPixels.resize(static_cast<size_t>(outW) * outH * 4);
+        const uint8_t* src = static_cast<const uint8_t*>(bits);
+        uint8_t* dst = outPixels.data();
+        for (int i = 0; i < outW * outH; ++i) {
+            dst[0] = src[2];
+            dst[1] = src[1];
+            dst[2] = src[0];
+            dst[3] = 255;
+            src += 4;
+            dst += 4;
+        }
+    }
+
+    SelectObject(memDc, oldBitmap);
+    DeleteObject(bitmap);
+    DeleteDC(memDc);
+    ReleaseDC(nullptr, screenDc);
+
+    return copied != FALSE && !outPixels.empty();
+}
+#endif
+
+bool Application::uploadScreenshotTexture() {
+    return uploadScreenshotTextureFromPixels(capturedPixels_, capturedW_, capturedH_);
+}
+
+bool Application::uploadScreenshotTextureFromPixels(const std::vector<uint8_t>& pixels,
+                                                    int width,
+                                                    int height) {
+    if (pixels.empty() || width <= 0 || height <= 0) {
+        return false;
+    }
 
     // Upload to GL texture
     platform_.eglContext->makeCurrent();
@@ -214,16 +419,14 @@ bool Application::captureScreen() {
         glGenTextures(1, &screenshotTexture_);
     }
     glBindTexture(GL_TEXTURE_2D, screenshotTexture_);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, capturedW_, capturedH_, 0,
-                 GL_RGBA, GL_UNSIGNED_BYTE, capturedPixels_.data());
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0,
+                 GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glBindTexture(GL_TEXTURE_2D, 0);
 
-    std::printf("[capture] GL texture = %u (%dx%d) via CPU readback\n",
-                screenshotTexture_, capturedW_, capturedH_);
     return screenshotTexture_ != 0;
 }
 
@@ -266,13 +469,18 @@ void Application::onMouseEvent(const platform::MouseEvent& evt) {
                    evt.button == platform::MouseButton::Right) {
             stateMachine_.transition(core::AppEvent::Escape);
             platform_.overlay->hide();
-            isDragging_ = false;
+            resetCaptureSession();
         }
     } else if (state == core::AppState::Annotating) {
         // Update hover state on toolbar buttons
         for (auto& btn : toolButtons_) {
             btn.isHovered = (mx >= btn.x && mx <= btn.x + btn.w &&
                              my >= btn.y && my <= btn.y + btn.h);
+        }
+
+        if (isLongCaptureActive_ && evt.type == platform::MouseEvent::Type::Scroll) {
+            handleLongScreenshotScroll(evt.scrollDelta, evt.position);
+            return;
         }
 
         if (evt.type == platform::MouseEvent::Type::Press &&
@@ -293,9 +501,7 @@ void Application::onMouseEvent(const platform::MouseEvent& evt) {
                    evt.button == platform::MouseButton::Right) {
             stateMachine_.transition(core::AppEvent::Escape);
             platform_.overlay->hide();
-            annotations_.clear();
-            commandHistory_.clear();
-            isDrawingAnnotation_ = false;
+            resetCaptureSession();
         }
     }
 }
@@ -307,10 +513,7 @@ void Application::onKeyEvent(const platform::KeyEvent& evt) {
     if (evt.keyCode == VK_ESCAPE) {
         stateMachine_.transition(core::AppEvent::Escape);
         platform_.overlay->hide();
-        isDragging_ = false;
-        isDrawingAnnotation_ = false;
-        annotations_.clear();
-        commandHistory_.clear();
+        resetCaptureSession();
         std::printf("[key] Escape pressed, returning to idle\n");
     }
 
@@ -342,8 +545,42 @@ void Application::buildToolbar() {
     toolButtons_.clear();
     auto sel = stateMachine_.selectedRegion();
 
-    // 7 buttons: [Rect] [Arrow] [Line] | [Undo] [Save] [Copy] [Cancel]
-    int numButtons = 7;
+    if (isLongScreenshotResult_) {
+        constexpr int numButtons = 4;
+        const float totalW = numButtons * kLongToolbarBtnSize;
+        const float totalH = kLongToolbarBtnSize;
+        const auto anchor = longScreenshotSourceRegion_.w > 0 ? longScreenshotSourceRegion_ : sel;
+        float tx = static_cast<float>(anchor.x + anchor.w) - totalW;
+        float ty = static_cast<float>(anchor.y + anchor.h) + 10.f;
+
+        const float sw = static_cast<float>(screenSize_.w);
+        const float sh = static_cast<float>(screenSize_.h);
+        tx = std::clamp(tx, 8.f, std::max(8.f, sw - totalW - 8.f));
+        if (ty + totalH > sh - 10.f) {
+            ty = static_cast<float>(anchor.y + anchor.h) - totalH - 14.f;
+        }
+
+        toolbarX_ = tx;
+        toolbarY_ = std::max(8.f, ty);
+        toolbarW_ = totalW;
+        toolbarH_ = totalH;
+
+        float bx = toolbarX_;
+        auto addBtn = [&](ToolButton::Type type) {
+            toolButtons_.push_back({ bx, toolbarY_, kLongToolbarBtnSize,
+                                     kLongToolbarBtnSize, type, false });
+            bx += kLongToolbarBtnSize;
+        };
+
+        addBtn(ToolButton::Type::Edit);
+        addBtn(ToolButton::Type::Save);
+        addBtn(ToolButton::Type::Cancel);
+        addBtn(ToolButton::Type::Confirm);
+        return;
+    }
+
+    // 8 buttons: [Rect] [Arrow] [Line] [Long] | [Undo] [Save] [Copy] [Cancel]
+    int numButtons = 8;
     float totalW = kToolbarPad * 2 + numButtons * kBtnSize + (numButtons - 1) * kBtnGap;
     float totalH = kToolbarPad * 2 + kBtnSize;
 
@@ -377,6 +614,7 @@ void Application::buildToolbar() {
     addBtn(ToolButton::Type::Rectangle);
     addBtn(ToolButton::Type::Arrow);
     addBtn(ToolButton::Type::Line);
+    addBtn(ToolButton::Type::LongScreenshot);
     addBtn(ToolButton::Type::Undo);
     addBtn(ToolButton::Type::Save);
     addBtn(ToolButton::Type::Copy);
@@ -396,6 +634,10 @@ bool Application::hitTestToolbar(float mx, float my) {
 
 void Application::onToolbarClick(ToolButton::Type type) {
     switch (type) {
+    case ToolButton::Type::Edit:
+        activeTool_ = core::AnnotationTool::Rectangle;
+        std::printf("[toolbar] Long screenshot edit mode\n");
+        break;
     case ToolButton::Type::Rectangle:
         activeTool_ = core::AnnotationTool::Rectangle;
         std::printf("[toolbar] Tool: Rectangle\n");
@@ -408,6 +650,10 @@ void Application::onToolbarClick(ToolButton::Type type) {
         activeTool_ = core::AnnotationTool::Line;
         std::printf("[toolbar] Tool: Line\n");
         break;
+    case ToolButton::Type::LongScreenshot:
+        pendingLongScreenshot_ = true;
+        std::printf("[toolbar] Long screenshot requested\n");
+        break;
     case ToolButton::Type::Undo:
         if (commandHistory_.canUndo()) {
             commandHistory_.undo();
@@ -415,16 +661,27 @@ void Application::onToolbarClick(ToolButton::Type type) {
         }
         break;
     case ToolButton::Type::Save:
+        if (isLongCaptureActive_) {
+            finishLongScreenshotMode();
+        }
         saveToFile();
         break;
     case ToolButton::Type::Copy:
+        if (isLongCaptureActive_) {
+            finishLongScreenshotMode();
+        }
+        saveToClipboard();
+        break;
+    case ToolButton::Type::Confirm:
+        if (isLongCaptureActive_) {
+            finishLongScreenshotMode();
+        }
         saveToClipboard();
         break;
     case ToolButton::Type::Cancel:
         stateMachine_.transition(core::AppEvent::Escape);
         platform_.overlay->hide();
-        annotations_.clear();
-        commandHistory_.clear();
+        resetCaptureSession();
         std::printf("[toolbar] Cancel\n");
         break;
     }
@@ -500,11 +757,20 @@ void Application::render() {
     glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
 
+    auto state = stateMachine_.currentState();
+
+    if (isLongScreenshotResult_ && state == core::AppState::Annotating) {
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        renderLongScreenshotUi();
+        glDisable(GL_BLEND);
+        platform_.eglContext->swapBuffers();
+        return;
+    }
+
     if (screenshotTexture_) {
         spriteBatch_.drawFullscreen(screenshotTexture_);
     }
-
-    auto state = stateMachine_.currentState();
 
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
@@ -594,7 +860,88 @@ void Application::renderAnnotations() {
     }
 }
 
+void Application::renderLongScreenshotUi() {
+    const float sw = static_cast<float>(screenSize_.w);
+    const float sh = static_cast<float>(screenSize_.h);
+
+    if (longBackgroundTexture_) {
+        spriteBatch_.drawFullscreen(longBackgroundTexture_);
+    }
+    shapeRenderer_.drawRectFilled(0.f, 0.f, sw, sh, kLongDimColor);
+
+    auto preview = stateMachine_.selectedRegion();
+    if (longScreenshotSourceRegion_.w > 0 && longScreenshotSourceRegion_.h > 0) {
+        preview = longScreenshotSourceRegion_;
+    }
+    const float px = static_cast<float>(preview.x);
+    const float py = static_cast<float>(preview.y);
+    const float pw = static_cast<float>(preview.w);
+    const float ph = static_cast<float>(preview.h);
+    const float previewScale = capturedW_ > 0 ? pw / static_cast<float>(capturedW_) : 1.f;
+    const float visibleV = capturedH_ > 0
+        ? std::clamp(ph / (static_cast<float>(capturedH_) * previewScale), 0.0f, 1.0f)
+        : 1.0f;
+
+    const float thumbMaxH = std::min(sh - 32.f, std::max(ph, ph + 96.f));
+    const float thumbH = std::max(160.f, thumbMaxH);
+    const float thumbW = std::clamp(
+        thumbH * static_cast<float>(capturedW_) / std::max(1, capturedH_),
+        72.f, 132.f);
+    const float gap = 18.f;
+    const float thumbX = px - thumbW - gap >= 8.f
+        ? px - thumbW - gap
+        : std::min(sw - thumbW - 8.f, px + pw + gap);
+    const float thumbY = std::clamp(
+        py + (ph - thumbH) * 0.5f,
+        8.f,
+        std::max(8.f, sh - thumbH - 8.f));
+
+    shapeRenderer_.drawRectFilled(thumbX + 3.f, thumbY + 3.f,
+                                  thumbW, thumbH, { 0, 0, 0, 52 });
+    shapeRenderer_.drawRectFilled(thumbX, thumbY, thumbW, thumbH, kLongPanel);
+    spriteBatch_.drawQuad(screenshotTexture_, thumbX, thumbY, thumbW, thumbH);
+
+    const float viewportH = std::max(18.f, thumbH * visibleV);
+    const float viewportY = thumbY + thumbH - viewportH;
+    shapeRenderer_.drawRectOutline(thumbX - 1.f, thumbY - 1.f,
+                                   thumbW + 2.f, thumbH + 2.f,
+                                   { 255, 255, 255, 130 }, 1.0f);
+    shapeRenderer_.drawRectOutline(thumbX - 2.f, viewportY - 1.f,
+                                   thumbW + 4.f, viewportH + 2.f,
+                                   { 255, 255, 255, 235 }, 2.0f);
+
+    shapeRenderer_.drawRectFilled(px - 2.f, py - 2.f,
+                                  pw + 4.f, ph + 4.f,
+                                  { 255, 255, 255, 245 });
+    const float visibleStartV = std::max(0.f, 1.f - visibleV);
+    spriteBatch_.drawQuad(screenshotTexture_, px, py, pw, ph,
+                          0.f, visibleStartV, 1.f, 1.f);
+
+    const bool hasHint = ensureLongHintTexture();
+    const float hintW = hasHint ? static_cast<float>(longHintTextW_ + 42) : 260.f;
+    const float hintH = 34.f;
+    const float hintX = px + (pw - hintW) * 0.5f;
+    const float hintY = py - hintH - 10.f >= 8.f
+        ? py - hintH - 10.f
+        : py + 10.f;
+    shapeRenderer_.drawRectFilled(hintX, hintY, hintW, hintH, kLongHintBg);
+    if (hasHint) {
+        spriteBatch_.drawQuad(longHintTextTexture_,
+                              hintX + 21.f,
+                              hintY + (hintH - longHintTextH_) * 0.5f,
+                              static_cast<float>(longHintTextW_),
+                              static_cast<float>(longHintTextH_));
+    }
+
+    renderLongScreenshotToolbar();
+}
+
 void Application::renderToolbar() {
+    if (isLongScreenshotResult_) {
+        renderLongScreenshotToolbar();
+        return;
+    }
+
     // Toolbar background (rounded rect approximated as filled rect)
     shapeRenderer_.drawRectFilled(toolbarX_, toolbarY_, toolbarW_, toolbarH_, kToolbarBg);
 
@@ -638,6 +985,18 @@ void Application::renderToolbar() {
                                      btn.x + btn.w - iconPad, btn.y + iconPad,
                                      kBtnIcon, 2.0f);
             break;
+        case ToolButton::Type::LongScreenshot:
+            // Downward scroll capture icon
+            shapeRenderer_.drawLine(cx, btn.y + iconPad,
+                                     cx, btn.y + btn.h - iconPad - 4,
+                                     kBtnIcon, 2.0f);
+            shapeRenderer_.drawLine(cx, btn.y + btn.h - iconPad,
+                                     cx - 6, btn.y + btn.h - iconPad - 6,
+                                     kBtnIcon, 2.0f);
+            shapeRenderer_.drawLine(cx, btn.y + btn.h - iconPad,
+                                     cx + 6, btn.y + btn.h - iconPad - 6,
+                                     kBtnIcon, 2.0f);
+            break;
         case ToolButton::Type::Undo:
             // Curved arrow (approximate with < shape)
             shapeRenderer_.drawLine(cx, btn.y + iconPad, btn.x + iconPad, cy, kBtnIcon, 2.0f);
@@ -673,6 +1032,72 @@ void Application::renderToolbar() {
     }
 }
 
+void Application::renderLongScreenshotToolbar() {
+    shapeRenderer_.drawRectFilled(toolbarX_ + 2.f, toolbarY_ + 3.f,
+                                  toolbarW_, toolbarH_, { 0, 0, 0, 42 });
+    shapeRenderer_.drawRectFilled(toolbarX_, toolbarY_,
+                                  toolbarW_, toolbarH_, kLongToolbar);
+
+    for (const auto& btn : toolButtons_) {
+        if (btn.isHovered) {
+            shapeRenderer_.drawRectFilled(btn.x + 2.f, btn.y + 2.f,
+                                          btn.w - 4.f, btn.h - 4.f,
+                                          { 232, 235, 240, 255 });
+        }
+
+        const float cx = btn.x + btn.w * 0.5f;
+        const float cy = btn.y + btn.h * 0.5f;
+        const float iconPad = 11.f;
+        const auto iconColor = btn.type == ToolButton::Type::Cancel ? kLongCancel :
+                               btn.type == ToolButton::Type::Confirm ? kLongConfirm :
+                               platform::Color{ 76, 82, 92, 255 };
+
+        switch (btn.type) {
+        case ToolButton::Type::Edit:
+            shapeRenderer_.drawRectOutline(btn.x + iconPad, btn.y + iconPad + 1.f,
+                                           btn.w - iconPad * 2.f - 2.f,
+                                           btn.h - iconPad * 2.f - 1.f,
+                                           iconColor, 1.6f);
+            shapeRenderer_.drawLine(cx - 4.f, cy + 5.f,
+                                    cx + 6.f, cy - 5.f,
+                                    iconColor, 2.0f);
+            break;
+        case ToolButton::Type::Save:
+            shapeRenderer_.drawLine(cx, btn.y + iconPad,
+                                    cx, btn.y + btn.h - iconPad - 5.f,
+                                    iconColor, 2.0f);
+            shapeRenderer_.drawLine(cx, btn.y + btn.h - iconPad - 4.f,
+                                    cx - 5.f, btn.y + btn.h - iconPad - 9.f,
+                                    iconColor, 2.0f);
+            shapeRenderer_.drawLine(cx, btn.y + btn.h - iconPad - 4.f,
+                                    cx + 5.f, btn.y + btn.h - iconPad - 9.f,
+                                    iconColor, 2.0f);
+            shapeRenderer_.drawLine(btn.x + iconPad, btn.y + btn.h - iconPad,
+                                    btn.x + btn.w - iconPad, btn.y + btn.h - iconPad,
+                                    iconColor, 2.0f);
+            break;
+        case ToolButton::Type::Cancel:
+            shapeRenderer_.drawLine(btn.x + iconPad, btn.y + iconPad,
+                                    btn.x + btn.w - iconPad, btn.y + btn.h - iconPad,
+                                    iconColor, 2.2f);
+            shapeRenderer_.drawLine(btn.x + btn.w - iconPad, btn.y + iconPad,
+                                    btn.x + iconPad, btn.y + btn.h - iconPad,
+                                    iconColor, 2.2f);
+            break;
+        case ToolButton::Type::Confirm:
+            shapeRenderer_.drawLine(cx - 8.f, cy + 1.f,
+                                    cx - 2.f, cy + 7.f,
+                                    iconColor, 2.4f);
+            shapeRenderer_.drawLine(cx - 2.f, cy + 7.f,
+                                    cx + 10.f, cy - 7.f,
+                                    iconColor, 2.4f);
+            break;
+        default:
+            break;
+        }
+    }
+}
+
 void Application::renderDimMask(float selX, float selY, float selW, float selH) {
     float sw = static_cast<float>(screenSize_.w);
     float sh = static_cast<float>(screenSize_.h);
@@ -689,25 +1114,483 @@ void Application::renderDimMask(float selX, float selY, float selW, float selH) 
 }
 
 // ── Save / Export ───────────────────────────────────────────────
-std::vector<uint8_t> Application::renderSelectionToPixels() {
-    auto sel = stateMachine_.selectedRegion();
-    int sx = sel.x, sy = sel.y, sw = sel.w, sh = sel.h;
+// ── Long Screenshot ─────────────────────────────────────────────
+std::vector<uint8_t> Application::cropPixels(const std::vector<uint8_t>& source,
+                                             int sourceW,
+                                             int sourceH,
+                                             platform::Rect region) const {
+    int sx = std::max(0, region.x);
+    int sy = std::max(0, region.y);
+    int sw = std::max(0, region.w);
+    int sh = std::max(0, region.h);
 
-    // Clamp to captured image bounds
-    if (sx < 0) sx = 0;
-    if (sy < 0) sy = 0;
-    if (sx + sw > capturedW_) sw = capturedW_ - sx;
-    if (sy + sh > capturedH_) sh = capturedH_ - sy;
+    if (sx + sw > sourceW) sw = sourceW - sx;
+    if (sy + sh > sourceH) sh = sourceH - sy;
+    if (source.empty() || sw <= 0 || sh <= 0) {
+        return {};
+    }
 
     std::vector<uint8_t> result(static_cast<size_t>(sw) * sh * 4);
-
-    // Extract selection region from captured pixels
     for (int y = 0; y < sh; ++y) {
-        const uint8_t* srcRow = capturedPixels_.data() +
-                                (static_cast<size_t>(sy + y) * capturedW_ + sx) * 4;
+        const uint8_t* srcRow = source.data() +
+            (static_cast<size_t>(sy + y) * sourceW + sx) * 4;
         uint8_t* dstRow = result.data() + static_cast<size_t>(y) * sw * 4;
         std::memcpy(dstRow, srcRow, static_cast<size_t>(sw) * 4);
     }
+    return result;
+}
+
+int Application::trimTrailingCaptureDropout(std::vector<uint8_t>& pixels,
+                                            int width,
+                                            int height) const {
+    if (width <= 0 || height <= 0 ||
+        pixels.size() != static_cast<size_t>(width) * height * 4) {
+        return height;
+    }
+
+    auto isDropoutRow = [&](int y) {
+        const uint8_t* row = pixels.data() + static_cast<size_t>(y) * width * 4;
+        int nearBlack = 0;
+        int dark = 0;
+        int colored = 0;
+        int minLuma = 255;
+        int maxLuma = 0;
+        for (int x = 0; x < width; ++x) {
+            const uint8_t r = row[x * 4 + 0];
+            const uint8_t g = row[x * 4 + 1];
+            const uint8_t b = row[x * 4 + 2];
+            const int luma = (static_cast<int>(r) * 299 +
+                              static_cast<int>(g) * 587 +
+                              static_cast<int>(b) * 114) / 1000;
+            if (r <= 8 && g <= 8 && b <= 8) {
+                ++nearBlack;
+            }
+            if (luma <= 42) {
+                ++dark;
+            }
+            if (r > 70 || g > 70 || b > 70) {
+                ++colored;
+            }
+            minLuma = std::min(minLuma, luma);
+            maxLuma = std::max(maxLuma, luma);
+        }
+        const bool almostBlack =
+            nearBlack >= width * 95 / 100 && colored <= std::max(1, width / 200);
+        const bool uniformDark =
+            dark >= width * 96 / 100 &&
+            (maxLuma - minLuma) <= 18 &&
+            colored <= std::max(1, width / 100);
+        return almostBlack || uniformDark;
+    };
+
+    int dropoutRows = 0;
+    for (int y = height - 1; y >= 0 && isDropoutRow(y); --y) {
+        ++dropoutRows;
+    }
+
+    const bool significantBand =
+        dropoutRows >= 24 && dropoutRows >= std::max(1, height / 12);
+    if (!significantBand || dropoutRows >= height - 32) {
+        return height;
+    }
+
+    const int trimmedHeight = height - dropoutRows;
+    pixels.resize(static_cast<size_t>(width) * trimmedHeight * 4);
+    std::printf("[long] Trimmed %d trailing black capture rows (%dx%d -> %dx%d)\n",
+                dropoutRows, width, height, width, trimmedHeight);
+    return trimmedHeight;
+}
+
+platform::Rect Application::fitLongPreviewRect(int imageW, int imageH) const {
+    if (longScreenshotSourceRegion_.w > 0 && longScreenshotSourceRegion_.h > 0) {
+        return longScreenshotSourceRegion_;
+    }
+
+    const int viewportH = std::min(imageH, screenSize_.h - 148);
+    return {
+        (screenSize_.w - imageW) / 2,
+        std::max(56, (screenSize_.h - viewportH) / 2 - 10),
+        imageW,
+        viewportH
+    };
+}
+
+bool Application::ensureLongHintTexture() {
+    if (longHintTextTexture_) {
+        return true;
+    }
+
+#ifdef _WIN32
+    const wchar_t* text = L"\u6EDA\u52A8\u9875\u9762\u622A\u53D6\u66F4\u591A\u5185\u5BB9";
+    HDC hdc = CreateCompatibleDC(nullptr);
+    if (!hdc) return false;
+
+    HFONT font = CreateFontW(-18, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+                             CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                             DEFAULT_PITCH | FF_DONTCARE,
+                             L"Microsoft YaHei UI");
+    HGDIOBJ oldFont = SelectObject(hdc, font);
+
+    SIZE textSize = {};
+    GetTextExtentPoint32W(hdc, text, static_cast<int>(wcslen(text)), &textSize);
+    longHintTextW_ = std::max(1, static_cast<int>(textSize.cx));
+    longHintTextH_ = std::max(1, static_cast<int>(textSize.cy) + 2);
+
+    BITMAPINFO bmi = {};
+    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bmi.bmiHeader.biWidth = longHintTextW_;
+    bmi.bmiHeader.biHeight = -longHintTextH_;
+    bmi.bmiHeader.biPlanes = 1;
+    bmi.bmiHeader.biBitCount = 32;
+    bmi.bmiHeader.biCompression = BI_RGB;
+
+    void* bits = nullptr;
+    HBITMAP bitmap = CreateDIBSection(hdc, &bmi, DIB_RGB_COLORS, &bits, nullptr, 0);
+    if (!bitmap || !bits) {
+        SelectObject(hdc, oldFont);
+        DeleteObject(font);
+        DeleteDC(hdc);
+        return false;
+    }
+
+    HGDIOBJ oldBitmap = SelectObject(hdc, bitmap);
+    std::memset(bits, 0, static_cast<size_t>(longHintTextW_) * longHintTextH_ * 4);
+    SetBkMode(hdc, TRANSPARENT);
+    SetTextColor(hdc, RGB(255, 255, 255));
+    TextOutW(hdc, 0, 1, text, static_cast<int>(wcslen(text)));
+
+    std::vector<uint8_t> rgba(static_cast<size_t>(longHintTextW_) * longHintTextH_ * 4);
+    const uint8_t* bgra = static_cast<const uint8_t*>(bits);
+    for (int y = 0; y < longHintTextH_; ++y) {
+        for (int x = 0; x < longHintTextW_; ++x) {
+            const size_t i = (static_cast<size_t>(y) * longHintTextW_ + x) * 4;
+            const uint8_t alpha = std::max({ bgra[i + 0], bgra[i + 1], bgra[i + 2] });
+            rgba[i + 0] = 255;
+            rgba[i + 1] = 255;
+            rgba[i + 2] = 255;
+            rgba[i + 3] = alpha;
+        }
+    }
+
+    SelectObject(hdc, oldBitmap);
+    SelectObject(hdc, oldFont);
+    DeleteObject(bitmap);
+    DeleteObject(font);
+    DeleteDC(hdc);
+
+    glGenTextures(1, &longHintTextTexture_);
+    glBindTexture(GL_TEXTURE_2D, longHintTextTexture_);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, longHintTextW_, longHintTextH_, 0,
+                 GL_RGBA, GL_UNSIGNED_BYTE, rgba.data());
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    return longHintTextTexture_ != 0;
+#else
+    return false;
+#endif
+}
+
+bool Application::captureLongScreenshot() {
+    if (isLongCaptureActive_) {
+        std::printf("[long] Already in long screenshot mode\n");
+        return false;
+    }
+    if (isLongScreenshotResult_) {
+        std::printf("[long] Current image is already a long screenshot result\n");
+        return false;
+    }
+
+    const auto selected = stateMachine_.selectedRegion();
+    if (selected.w <= 0 || selected.h <= 0) {
+        std::fprintf(stderr, "[long] Invalid selected region\n");
+        return false;
+    }
+
+    auto firstFrame = cropPixels(capturedPixels_, capturedW_, capturedH_, selected);
+    if (firstFrame.empty()) {
+        std::fprintf(stderr, "[long] Failed to crop initial frame\n");
+        return false;
+    }
+
+    platform_.eglContext->makeCurrent();
+    if (capturedW_ > 0 && capturedH_ > 0 && !capturedPixels_.empty()) {
+        if (longBackgroundTexture_ == 0) {
+            glGenTextures(1, &longBackgroundTexture_);
+        }
+        glBindTexture(GL_TEXTURE_2D, longBackgroundTexture_);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, capturedW_, capturedH_, 0,
+                     GL_RGBA, GL_UNSIGNED_BYTE, capturedPixels_.data());
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glBindTexture(GL_TEXTURE_2D, 0);
+    }
+
+    core::LongScreenshotStitchOptions stitchOptions;
+    stitchOptions.minOverlapRows = std::min(selected.h - 1, std::max(32, selected.h / 3));
+    stitchOptions.maxOverlapRows = std::min(900, std::max(1, selected.h - 8));
+    stitchOptions.reliableMatchScore = 28.0f;
+    stitchOptions.appendOnUnreliableMatch = true;
+    longStitcher_ = core::LongScreenshotStitcher(selected.w, stitchOptions);
+    longStitcher_.start(firstFrame, selected.h);
+
+    capturedW_ = longStitcher_.width();
+    capturedH_ = longStitcher_.height();
+    isLongCaptureActive_ = true;
+    isLongScreenshotResult_ = true;
+    pendingLongFrameCapture_ = false;
+    longNeedsTrailingFrameCapture_ = false;
+    longLastFrameCapture_ = std::chrono::steady_clock::now();
+    longScreenshotSourceRegion_ = selected;
+    annotations_.clear();
+    commandHistory_.clear();
+
+    if (!uploadScreenshotTextureFromPixels(longStitcher_.pixels(), capturedW_, capturedH_)) {
+        std::fprintf(stderr, "[long] Failed to upload stitched screenshot texture\n");
+        return false;
+    }
+
+    stateMachine_.setSelectedRegion(fitLongPreviewRect(capturedW_, capturedH_));
+    buildToolbar();
+    std::printf("[long] Entered manual long screenshot mode (%dx%d). Scroll to capture; click check to finish.\n",
+                capturedW_, capturedH_);
+    return true;
+}
+
+void Application::handleLongScreenshotScroll(float scrollDelta,
+                                             platform::Point cursorPosition) {
+    if (!isLongCaptureActive_) {
+        return;
+    }
+
+    const int wheelDelta = static_cast<int>(scrollDelta * 120.0f);
+    if (wheelDelta >= 0) {
+        return;
+    }
+
+    platform::Point scrollPoint = {
+        screenBounds_.x + cursorPosition.x,
+        screenBounds_.y + cursorPosition.y
+    };
+    const bool cursorInSource =
+        cursorPosition.x >= longScreenshotSourceRegion_.x &&
+        cursorPosition.x <= longScreenshotSourceRegion_.x + longScreenshotSourceRegion_.w &&
+        cursorPosition.y >= longScreenshotSourceRegion_.y &&
+        cursorPosition.y <= longScreenshotSourceRegion_.y + longScreenshotSourceRegion_.h;
+    if (!cursorInSource) {
+        scrollPoint = {
+            screenBounds_.x + longScreenshotSourceRegion_.x + longScreenshotSourceRegion_.w / 2,
+            screenBounds_.y + longScreenshotSourceRegion_.y + longScreenshotSourceRegion_.h / 2
+        };
+    }
+
+    if (!platform_.input->scrollAt(scrollPoint,
+                                   wheelDelta,
+                                   platform_.overlay->getNativeHandle())) {
+        std::fprintf(stderr, "[long] Manual scroll forwarding failed\n");
+        return;
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    const auto requestedDue = now + std::chrono::milliseconds(kLongCaptureDelayMs);
+    const auto trailingDue = now + std::chrono::milliseconds(kLongTrailingCaptureDelayMs);
+    const auto intervalDue = longLastFrameCapture_ +
+        std::chrono::milliseconds(kLongMinCaptureIntervalMs);
+    const auto nextDue = std::max(requestedDue, intervalDue);
+
+    longNeedsTrailingFrameCapture_ = true;
+    longTrailingFrameCaptureDue_ = trailingDue;
+    if (!pendingLongFrameCapture_) {
+        longFrameCaptureDue_ = nextDue;
+    }
+    pendingLongFrameCapture_ = true;
+}
+
+bool Application::appendLongScreenshotFrame() {
+    if (!isLongCaptureActive_) {
+        return false;
+    }
+
+    GLint glMaxTextureSize = kLongMaxOutputHeight;
+    glGetIntegerv(GL_MAX_TEXTURE_SIZE, &glMaxTextureSize);
+    const int maxOutputHeight = std::max(
+        longScreenshotSourceRegion_.h,
+        std::min(kLongMaxOutputHeight, static_cast<int>(glMaxTextureSize)));
+    if (longStitcher_.height() + longScreenshotSourceRegion_.h >= maxOutputHeight) {
+        std::printf("[long] Reached max output height (%d px)\n", maxOutputHeight);
+        return false;
+    }
+
+    auto tryAppendFrame = [&](const std::vector<uint8_t>& framePixels,
+                              int frameW,
+                              int frameH,
+                              const char* sourceLabel) {
+        if (frameW != longScreenshotSourceRegion_.w ||
+            framePixels.size() != static_cast<size_t>(frameW) * frameH * 4) {
+            std::fprintf(stderr, "[long] Invalid %s frame size (%dx%d, expected %dx%d)\n",
+                         sourceLabel, frameW, frameH,
+                         longScreenshotSourceRegion_.w, longScreenshotSourceRegion_.h);
+            return false;
+        }
+        if (frameH < std::max(64, longScreenshotSourceRegion_.h / 3)) {
+            std::fprintf(stderr, "[long] Ignoring too-short %s frame (%dx%d)\n",
+                         sourceLabel, frameW, frameH);
+            return false;
+        }
+
+        auto stitch = longStitcher_.append(framePixels, frameH);
+
+        if (!stitch.appended) {
+            if (!stitch.duplicate) {
+                std::printf("[long] Ignored %s frame overlap=%d score=%.2f\n",
+                            sourceLabel, stitch.overlapRows, stitch.score);
+            }
+            return false;
+        }
+
+        capturedW_ = longStitcher_.width();
+        capturedH_ = longStitcher_.height();
+        uploadScreenshotTextureFromPixels(longStitcher_.pixels(), capturedW_, capturedH_);
+        stateMachine_.setSelectedRegion(fitLongPreviewRect(capturedW_, capturedH_));
+        buildToolbar();
+        return true;
+    };
+
+    std::vector<uint8_t> framePixels;
+    int frameW = 0, frameH = 0;
+
+    platform_.overlay->hide();
+    platform_.overlay->pumpMessages();
+    const bool captured =
+        captureLongFramePixels(framePixels, frameW, frameH, longScreenshotSourceRegion_);
+    platform_.overlay->show();
+    platform_.overlay->pumpMessages();
+
+    if (!captured) {
+        std::fprintf(stderr, "[long] Failed to capture user-scrolled frame\n");
+        return false;
+    }
+    frameH = trimTrailingCaptureDropout(framePixels, frameW, frameH);
+
+    return tryAppendFrame(framePixels, frameW, frameH, "hidden-overlay");
+}
+
+void Application::finishLongScreenshotMode() {
+    if (!isLongCaptureActive_) {
+        return;
+    }
+
+    isLongCaptureActive_ = false;
+    pendingLongFrameCapture_ = false;
+    longNeedsTrailingFrameCapture_ = false;
+    buildToolbar();
+    std::printf("[long] Manual long screenshot finished (%dx%d)\n",
+                capturedW_, capturedH_);
+}
+
+void Application::runPendingActions() {
+    if (pendingLongScreenshot_) {
+        pendingLongScreenshot_ = false;
+        if (stateMachine_.currentState() != core::AppState::Annotating) {
+            std::printf("[long] Ignoring pending long screenshot outside annotating state\n");
+            return;
+        }
+
+        captureLongScreenshot();
+    }
+
+    if (!pendingLongFrameCapture_) {
+        return;
+    }
+    if (!isLongCaptureActive_ ||
+        stateMachine_.currentState() != core::AppState::Annotating) {
+        pendingLongFrameCapture_ = false;
+        longNeedsTrailingFrameCapture_ = false;
+        return;
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    if (now < longFrameCaptureDue_) {
+        return;
+    }
+
+#ifdef _WIN32
+    POINT cursor = {};
+    if (GetCursorPos(&cursor)) {
+        const float cx = static_cast<float>(cursor.x - screenBounds_.x);
+        const float cy = static_cast<float>(cursor.y - screenBounds_.y);
+        constexpr float toolbarGuard = 8.f;
+        if (cx >= toolbarX_ - toolbarGuard &&
+            cx <= toolbarX_ + toolbarW_ + toolbarGuard &&
+            cy >= toolbarY_ - toolbarGuard &&
+            cy <= toolbarY_ + toolbarH_ + toolbarGuard) {
+            longFrameCaptureDue_ = now + std::chrono::milliseconds(80);
+            return;
+        }
+    }
+#endif
+
+    pendingLongFrameCapture_ = false;
+    const bool scheduleTrailingCapture = longNeedsTrailingFrameCapture_;
+    const auto trailingDue = longTrailingFrameCaptureDue_;
+    longNeedsTrailingFrameCapture_ = false;
+    longLastFrameCapture_ = now;
+    if (appendLongScreenshotFrame()) {
+        render();
+    }
+
+    if (isLongCaptureActive_ && scheduleTrailingCapture) {
+        const auto afterCapture = std::chrono::steady_clock::now();
+        const auto requestedDue = afterCapture + std::chrono::milliseconds(kLongCaptureDelayMs);
+        const auto intervalDue = longLastFrameCapture_ +
+            std::chrono::milliseconds(kLongMinCaptureIntervalMs);
+        longFrameCaptureDue_ = std::max({ requestedDue, intervalDue, trailingDue });
+        pendingLongFrameCapture_ = true;
+    }
+}
+
+void Application::resetCaptureSession() {
+    if (platform_.eglContext) {
+        platform_.eglContext->makeCurrent();
+    }
+    if (screenshotTexture_) {
+        glDeleteTextures(1, &screenshotTexture_);
+        screenshotTexture_ = 0;
+    }
+    if (longBackgroundTexture_) {
+        glDeleteTextures(1, &longBackgroundTexture_);
+        longBackgroundTexture_ = 0;
+    }
+
+    isLongScreenshotResult_ = false;
+    isLongCaptureActive_ = false;
+    pendingLongScreenshot_ = false;
+    pendingLongFrameCapture_ = false;
+    longNeedsTrailingFrameCapture_ = false;
+    longScreenshotSourceRegion_ = {};
+    longStitcher_.reset(0);
+    capturedPixels_.clear();
+    capturedW_ = 0;
+    capturedH_ = 0;
+    annotations_.clear();
+    commandHistory_.clear();
+    isDragging_ = false;
+    isDrawingAnnotation_ = false;
+    toolButtons_.clear();
+}
+
+std::vector<uint8_t> Application::renderSelectionToPixels() {
+    if (isLongScreenshotResult_) {
+        return longStitcher_.pixels();
+    }
+
+    auto sel = stateMachine_.selectedRegion();
+    auto result = cropPixels(capturedPixels_, capturedW_, capturedH_, sel);
 
     // Draw annotations onto the pixel buffer
     // For MVP, we render annotations by rendering to FBO and reading back.
@@ -720,24 +1603,24 @@ std::vector<uint8_t> Application::renderSelectionToPixels() {
 bool Application::saveToClipboard() {
     auto sel = stateMachine_.selectedRegion();
     auto pixels = renderSelectionToPixels();
+    int outW = isLongScreenshotResult_ ? capturedW_ : sel.w;
+    int outH = isLongScreenshotResult_ ? capturedH_ : sel.h;
 
     if (pixels.empty()) {
         std::fprintf(stderr, "[save] No pixels to copy\n");
         return false;
     }
 
-    if (!platform_.clipboard->writeImage(pixels.data(), sel.w, sel.h)) {
+    stateMachine_.transition(core::AppEvent::Escape);
+    platform_.overlay->hide();
+    resetCaptureSession();
+
+    if (!platform_.clipboard->writeImage(pixels.data(), outW, outH)) {
         std::fprintf(stderr, "[save] Clipboard write failed\n");
         return false;
     }
 
-    std::printf("[save] Copied to clipboard (%dx%d)\n", sel.w, sel.h);
-
-    // After copy, hide overlay and return to idle
-    stateMachine_.transition(core::AppEvent::Escape);
-    platform_.overlay->hide();
-    annotations_.clear();
-    commandHistory_.clear();
+    std::printf("[save] Copied to clipboard (%dx%d)\n", outW, outH);
     return true;
 }
 
@@ -751,26 +1634,27 @@ bool Application::saveToFile() {
 
     auto sel = stateMachine_.selectedRegion();
     auto pixels = renderSelectionToPixels();
+    int outW = isLongScreenshotResult_ ? capturedW_ : sel.w;
+    int outH = isLongScreenshotResult_ ? capturedH_ : sel.h;
 
     if (pixels.empty()) {
         std::fprintf(stderr, "[save] No pixels to save\n");
         return false;
     }
 
-    int ok = stbi_write_png(path.c_str(), sel.w, sel.h, 4,
-                             pixels.data(), sel.w * 4);
+    int ok = stbi_write_png(path.c_str(), outW, outH, 4,
+                             pixels.data(), outW * 4);
     if (!ok) {
         std::fprintf(stderr, "[save] Failed to write PNG: %s\n", path.c_str());
         return false;
     }
 
-    std::printf("[save] Saved to: %s (%dx%d)\n", path.c_str(), sel.w, sel.h);
+    std::printf("[save] Saved to: %s (%dx%d)\n", path.c_str(), outW, outH);
 
     // After save, hide overlay and return to idle
     stateMachine_.transition(core::AppEvent::Escape);
     platform_.overlay->hide();
-    annotations_.clear();
-    commandHistory_.clear();
+    resetCaptureSession();
     return true;
 }
 

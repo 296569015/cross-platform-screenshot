@@ -15,10 +15,16 @@ public:
                             HotkeyCallback callback) override;
     void unregisterHotkey(HotkeyId id) override;
     void pollHotkeys() override;
+    bool scrollAt(Point screenPosition,
+                  int wheelDelta,
+                  void* ignoredWindow = nullptr) override;
 
 private:
+    HWND windowFromPointExcluding(Point screenPosition, HWND ignoredWindow) const;
+
     HotkeyId nextId_ = 1;
     std::unordered_map<HotkeyId, HotkeyCallback> callbacks_;
+    HWND lastScrollTarget_ = nullptr;
 };
 
 } // namespace sst::platform::win32
