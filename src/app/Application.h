@@ -66,6 +66,10 @@ private:
                                int& outW,
                                int& outH,
                                platform::Rect region);
+    bool captureLongFramePixelsFromCoveredWindow(std::vector<uint8_t>& outPixels,
+                                                 int& outW,
+                                                 int& outH,
+                                                 platform::Rect region);
 #endif
     bool uploadScreenshotTexture();
     bool uploadScreenshotTextureFromPixels(const std::vector<uint8_t>& pixels,
@@ -149,6 +153,8 @@ private:
     // Pixel data for save (stored after capture for reuse)
     std::vector<uint8_t> capturedPixels_;
     int capturedW_ = 0, capturedH_ = 0;
+    std::vector<uint8_t> longBackgroundPixels_;
+    int longBackgroundW_ = 0, longBackgroundH_ = 0;
     bool isLongScreenshotResult_ = false;
     bool isLongCaptureActive_ = false;
     bool pendingLongScreenshot_ = false;

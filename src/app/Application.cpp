@@ -29,6 +29,9 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+#ifndef PW_RENDERFULLCONTENT
+#define PW_RENDERFULLCONTENT 0x00000002
+#endif
 #endif
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
@@ -465,9 +468,9 @@ bool Application::captureFramePixels(std::vector<uint8_t>& outPixels,
 }
 
 bool Application::captureLongFramePixels(std::vector<uint8_t>& outPixels,
-                                         int& outW,
-                                         int& outH,
-                                         platform::Rect region) {
+                                          int& outW,
+                                          int& outH,
+                                          platform::Rect region) {
 #ifdef _WIN32
     if (captureFramePixelsGdi(outPixels, outW, outH, region)) {
         return true;
@@ -488,6 +491,136 @@ bool Application::captureLongFramePixels(std::vector<uint8_t>& outPixels,
 }
 
 #ifdef _WIN32
+bool Application::captureLongFramePixelsFromCoveredWindow(std::vector<uint8_t>& outPixels,
+                                                          int& outW,
+                                                          int& outH,
+                                                          platform::Rect region) {
+    HWND overlayHwnd = static_cast<HWND>(platform_.overlay->getNativeHandle());
+    const POINT screenPoint = {
+        screenBounds_.x + region.x + region.w / 2,
+        screenBounds_.y + region.y + region.h / 2
+    };
+
+    HWND target = WindowFromPoint(screenPoint);
+    if (overlayHwnd && (target == overlayHwnd || GetAncestor(target, GA_ROOT) == overlayHwnd)) {
+        target = nullptr;
+        for (HWND hwnd = GetTopWindow(nullptr); hwnd; hwnd = GetWindow(hwnd, GW_HWNDNEXT)) {
+            if (hwnd == overlayHwnd || GetAncestor(hwnd, GA_ROOT) == overlayHwnd) {
+                continue;
+            }
+            if (!IsWindowVisible(hwnd) || !IsWindowEnabled(hwnd)) {
+                continue;
+            }
+
+            RECT rc = {};
+            if (!GetWindowRect(hwnd, &rc) || !PtInRect(&rc, screenPoint)) {
+                continue;
+            }
+
+            POINT clientPoint = screenPoint;
+            ScreenToClient(hwnd, &clientPoint);
+            HWND child = ChildWindowFromPointEx(
+                hwnd,
+                clientPoint,
+                CWP_SKIPINVISIBLE | CWP_SKIPDISABLED | CWP_SKIPTRANSPARENT);
+            target = child ? child : hwnd;
+            break;
+        }
+    }
+
+    if (!target || (overlayHwnd && GetAncestor(target, GA_ROOT) == overlayHwnd)) {
+        return false;
+    }
+
+    HWND root = GetAncestor(target, GA_ROOT);
+    if (!root || !IsWindowVisible(root) || IsIconic(root)) {
+        return false;
+    }
+
+    RECT windowRect = {};
+    if (!GetWindowRect(root, &windowRect)) {
+        return false;
+    }
+
+    const int windowW = static_cast<int>(windowRect.right - windowRect.left);
+    const int windowH = static_cast<int>(windowRect.bottom - windowRect.top);
+    if (windowW <= 0 || windowH <= 0) {
+        return false;
+    }
+
+    const RECT captureRect = {
+        screenBounds_.x + region.x,
+        screenBounds_.y + region.y,
+        screenBounds_.x + region.x + region.w,
+        screenBounds_.y + region.y + region.h
+    };
+    if (captureRect.left < windowRect.left ||
+        captureRect.top < windowRect.top ||
+        captureRect.right > windowRect.right ||
+        captureRect.bottom > windowRect.bottom) {
+        return false;
+    }
+
+    HDC screenDc = GetDC(nullptr);
+    if (!screenDc) {
+        return false;
+    }
+
+    HDC memDc = CreateCompatibleDC(screenDc);
+    if (!memDc) {
+        ReleaseDC(nullptr, screenDc);
+        return false;
+    }
+
+    BITMAPINFO bmi = {};
+    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bmi.bmiHeader.biWidth = windowW;
+    bmi.bmiHeader.biHeight = -windowH;
+    bmi.bmiHeader.biPlanes = 1;
+    bmi.bmiHeader.biBitCount = 32;
+    bmi.bmiHeader.biCompression = BI_RGB;
+
+    void* bits = nullptr;
+    HBITMAP bitmap = CreateDIBSection(screenDc, &bmi, DIB_RGB_COLORS, &bits, nullptr, 0);
+    if (!bitmap || !bits) {
+        if (bitmap) DeleteObject(bitmap);
+        DeleteDC(memDc);
+        ReleaseDC(nullptr, screenDc);
+        return false;
+    }
+
+    HGDIOBJ oldBitmap = SelectObject(memDc, bitmap);
+    const BOOL printed = PrintWindow(root, memDc, PW_RENDERFULLCONTENT);
+
+    outPixels.clear();
+    outW = std::max(0, region.w);
+    outH = std::max(0, region.h);
+    if (printed && outW > 0 && outH > 0) {
+        outPixels.resize(static_cast<size_t>(outW) * outH * 4);
+        const int srcX = static_cast<int>(captureRect.left - windowRect.left);
+        const int srcY = static_cast<int>(captureRect.top - windowRect.top);
+        const uint8_t* srcBase = static_cast<const uint8_t*>(bits);
+        for (int y = 0; y < outH; ++y) {
+            const uint8_t* src = srcBase +
+                (static_cast<size_t>(srcY + y) * windowW + srcX) * 4;
+            uint8_t* dst = outPixels.data() + static_cast<size_t>(y) * outW * 4;
+            for (int x = 0; x < outW; ++x) {
+                dst[x * 4 + 0] = src[x * 4 + 2];
+                dst[x * 4 + 1] = src[x * 4 + 1];
+                dst[x * 4 + 2] = src[x * 4 + 0];
+                dst[x * 4 + 3] = 255;
+            }
+        }
+    }
+
+    SelectObject(memDc, oldBitmap);
+    DeleteObject(bitmap);
+    DeleteDC(memDc);
+    ReleaseDC(nullptr, screenDc);
+
+    return printed != FALSE && !outPixels.empty();
+}
+
 bool Application::captureFramePixelsGdi(std::vector<uint8_t>& outPixels,
                                         int& outW,
                                         int& outH,
@@ -953,7 +1086,16 @@ bool Application::shouldUseSoftwareOverlay() const {
 }
 
 void Application::renderSoftwareOverlay() {
-    if (capturedPixels_.empty() || capturedW_ <= 0 || capturedH_ <= 0) {
+    const bool useLongBackground =
+        isLongScreenshotResult_ &&
+        !longBackgroundPixels_.empty() &&
+        longBackgroundW_ > 0 &&
+        longBackgroundH_ > 0;
+    const auto& backgroundPixels = useLongBackground ? longBackgroundPixels_ : capturedPixels_;
+    const int backgroundW = useLongBackground ? longBackgroundW_ : capturedW_;
+    const int backgroundH = useLongBackground ? longBackgroundH_ : capturedH_;
+
+    if (backgroundPixels.empty() || backgroundW <= 0 || backgroundH <= 0) {
         return;
     }
 
@@ -964,10 +1106,10 @@ void Application::renderSoftwareOverlay() {
     }
 
     std::vector<uint8_t> bgra(static_cast<size_t>(width) * height * 4, 0);
-    const int copyW = std::min(width, capturedW_);
-    const int copyH = std::min(height, capturedH_);
+    const int copyW = std::min(width, backgroundW);
+    const int copyH = std::min(height, backgroundH);
     for (int y = 0; y < copyH; ++y) {
-        const uint8_t* src = capturedPixels_.data() + static_cast<size_t>(y) * capturedW_ * 4;
+        const uint8_t* src = backgroundPixels.data() + static_cast<size_t>(y) * backgroundW * 4;
         uint8_t* dst = bgra.data() + static_cast<size_t>(y) * width * 4;
         for (int x = 0; x < copyW; ++x) {
             dst[x * 4 + 0] = src[x * 4 + 2];
@@ -1038,6 +1180,51 @@ void Application::renderSoftwareOverlay() {
     HGDIOBJ oldBitmap = SelectObject(memDc, bitmap);
 
     SetBkMode(memDc, TRANSPARENT);
+    auto drawRgbaPixelsScaled = [&](const std::vector<uint8_t>& pixels,
+                                    int imageW,
+                                    int imageH,
+                                    int sourceY,
+                                    int sourceH,
+                                    float dx,
+                                    float dy,
+                                    float dw,
+                                    float dh) {
+        const int dstX = static_cast<int>(std::round(dx));
+        const int dstY = static_cast<int>(std::round(dy));
+        const int dstW = std::max(1, static_cast<int>(std::round(dw)));
+        const int dstH = std::max(1, static_cast<int>(std::round(dh)));
+        if (pixels.empty() || imageW <= 0 || imageH <= 0 || sourceH <= 0) {
+            return;
+        }
+
+        const int srcY0 = std::clamp(sourceY, 0, imageH - 1);
+        const int srcH = std::clamp(sourceH, 1, imageH - srcY0);
+        std::vector<uint8_t> scaled(static_cast<size_t>(dstW) * dstH * 4);
+        for (int y = 0; y < dstH; ++y) {
+            const int sy = srcY0 + std::min(srcH - 1, (y * srcH) / dstH);
+            for (int x = 0; x < dstW; ++x) {
+                const int sx = std::min(imageW - 1, (x * imageW) / dstW);
+                const size_t srcIdx = (static_cast<size_t>(sy) * imageW + sx) * 4;
+                const size_t dstIdx = (static_cast<size_t>(y) * dstW + x) * 4;
+                scaled[dstIdx + 0] = pixels[srcIdx + 2];
+                scaled[dstIdx + 1] = pixels[srcIdx + 1];
+                scaled[dstIdx + 2] = pixels[srcIdx + 0];
+                scaled[dstIdx + 3] = 255;
+            }
+        }
+
+        BITMAPINFO scaledBmi = {};
+        scaledBmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+        scaledBmi.bmiHeader.biWidth = dstW;
+        scaledBmi.bmiHeader.biHeight = -dstH;
+        scaledBmi.bmiHeader.biPlanes = 1;
+        scaledBmi.bmiHeader.biBitCount = 32;
+        scaledBmi.bmiHeader.biCompression = BI_RGB;
+        StretchDIBits(memDc, dstX, dstY, dstW, dstH,
+                      0, 0, dstW, dstH,
+                      scaled.data(), &scaledBmi, DIB_RGB_COLORS, SRCCOPY);
+    };
+
     if (state == core::AppState::Selecting) {
         if (isDragging_) {
             const float x0 = std::min(dragStartX_, dragCurrX_);
@@ -1048,6 +1235,70 @@ void Application::renderSoftwareOverlay() {
         }
     } else if (state == core::AppState::Annotating) {
         auto sel = stateMachine_.selectedRegion();
+        if (isLongScreenshotResult_) {
+            platform::Rect preview = longScreenshotSourceRegion_.w > 0
+                ? longScreenshotSourceRegion_
+                : sel;
+            const float px = static_cast<float>(preview.x);
+            const float py = static_cast<float>(preview.y);
+            const float pw = static_cast<float>(preview.w);
+            const float ph = static_cast<float>(preview.h);
+            const float previewScale = capturedW_ > 0 ? pw / static_cast<float>(capturedW_) : 1.f;
+            const float visibleV = capturedH_ > 0
+                ? std::clamp(ph / (static_cast<float>(capturedH_) * previewScale), 0.0f, 1.0f)
+                : 1.0f;
+            const int visibleRows = std::max(1, static_cast<int>(std::round(capturedH_ * visibleV)));
+            const int visibleStart = std::max(0, capturedH_ - visibleRows);
+
+            drawGdiRectFilled(memDc, px - 2.f, py - 2.f, pw + 4.f, ph + 4.f,
+                              { 255, 255, 255, 245 });
+            drawRgbaPixelsScaled(capturedPixels_, capturedW_, capturedH_,
+                                 visibleStart, visibleRows, px, py, pw, ph);
+
+            const float thumbMaxH = std::min(static_cast<float>(height) - 32.f,
+                                             std::max(ph, ph + 96.f));
+            const float thumbH = std::max(160.f, thumbMaxH);
+            const float thumbW = std::clamp(
+                thumbH * static_cast<float>(capturedW_) / std::max(1, capturedH_),
+                72.f, 132.f);
+            const float gap = 18.f;
+            const float thumbX = px - thumbW - gap >= 8.f
+                ? px - thumbW - gap
+                : std::min(static_cast<float>(width) - thumbW - 8.f, px + pw + gap);
+            const float thumbY = std::clamp(
+                py + (ph - thumbH) * 0.5f,
+                8.f,
+                std::max(8.f, static_cast<float>(height) - thumbH - 8.f));
+            drawGdiRectFilled(memDc, thumbX + 3.f, thumbY + 3.f,
+                              thumbW, thumbH, { 0, 0, 0, 52 });
+            drawGdiRectFilled(memDc, thumbX, thumbY, thumbW, thumbH, kLongPanel);
+            drawRgbaPixelsScaled(capturedPixels_, capturedW_, capturedH_,
+                                 0, capturedH_, thumbX, thumbY, thumbW, thumbH);
+            const float viewportH = std::max(18.f, thumbH * visibleV);
+            const float viewportY = thumbY + thumbH - viewportH;
+            drawGdiRectOutline(memDc, thumbX - 1.f, thumbY - 1.f,
+                               thumbW + 2.f, thumbH + 2.f,
+                               { 255, 255, 255, 130 }, 1.0f);
+            drawGdiRectOutline(memDc, thumbX - 2.f, viewportY - 1.f,
+                               thumbW + 4.f, viewportH + 2.f,
+                               { 255, 255, 255, 235 }, 2.0f);
+
+            const wchar_t* hint = L"\u6EDA\u52A8\u9875\u9762\u622A\u53D6\u66F4\u591A\u5185\u5BB9";
+            const float hintW = 270.f;
+            const float hintH = 34.f;
+            const float hintX = px + (pw - hintW) * 0.5f;
+            const float hintY = py - hintH - 10.f >= 8.f ? py - hintH - 10.f : py + 10.f;
+            drawGdiRectFilled(memDc, hintX, hintY, hintW, hintH, kLongHintBg);
+            SetTextColor(memDc, RGB(255, 255, 255));
+            RECT hintRect = {
+                static_cast<LONG>(std::round(hintX + 18.f)),
+                static_cast<LONG>(std::round(hintY + 7.f)),
+                static_cast<LONG>(std::round(hintX + hintW - 18.f)),
+                static_cast<LONG>(std::round(hintY + hintH))
+            };
+            DrawTextW(memDc, hint, -1, &hintRect, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+        }
+
         drawGdiRectOutline(memDc, static_cast<float>(sel.x), static_cast<float>(sel.y),
                            static_cast<float>(sel.w), static_cast<float>(sel.h),
                            kSelBorder, 2.0f);
@@ -1117,7 +1368,8 @@ void Application::renderSoftwareOverlay() {
             }
         }
 
-        drawGdiRectFilled(memDc, toolbarX_, toolbarY_, toolbarW_, toolbarH_, kToolbarBg);
+        drawGdiRectFilled(memDc, toolbarX_, toolbarY_, toolbarW_, toolbarH_,
+                          isLongScreenshotResult_ ? kLongToolbar : kToolbarBg);
         for (const auto& btn : toolButtons_) {
             const bool isSelected =
                 (btn.type == ToolButton::Type::Rectangle && activeTool_ == core::AnnotationTool::Rectangle) ||
@@ -1133,45 +1385,68 @@ void Application::renderSoftwareOverlay() {
             const float cx = btn.x + btn.w * 0.5f;
             const float cy = btn.y + btn.h * 0.5f;
             const float p = 8.f;
+            const auto iconColor = isLongScreenshotResult_
+                ? (btn.type == ToolButton::Type::Cancel ? kLongCancel :
+                   btn.type == ToolButton::Type::Confirm ? kLongConfirm :
+                   platform::Color{ 76, 82, 92, 255 })
+                : kBtnIcon;
             switch (btn.type) {
+            case ToolButton::Type::Edit:
+                drawGdiRectOutline(memDc, btn.x + p + 2.f, btn.y + p + 2.f,
+                                   btn.w - p * 2.f - 4.f, btn.h - p * 2.f - 4.f,
+                                   iconColor, 1.6f);
+                drawGdiLine(memDc, cx - 5.f, cy + 5.f, cx + 6.f, cy - 6.f,
+                            iconColor, 2.0f);
+                break;
             case ToolButton::Type::Rectangle:
                 drawGdiRectOutline(memDc, btn.x + p, btn.y + p,
-                                   btn.w - p * 2, btn.h - p * 2, kBtnIcon, 2.0f);
+                                   btn.w - p * 2, btn.h - p * 2, iconColor, 2.0f);
                 break;
             case ToolButton::Type::Arrow:
                 drawGdiArrow(memDc, btn.x + p, btn.y + p,
-                             btn.x + btn.w - p, btn.y + btn.h - p,
-                             kBtnIcon, 2.0f, 8.0f);
+                              btn.x + btn.w - p, btn.y + btn.h - p,
+                              iconColor, 2.0f, 8.0f);
                 break;
             case ToolButton::Type::Line:
                 drawGdiLine(memDc, btn.x + p, btn.y + btn.h - p,
-                            btn.x + btn.w - p, btn.y + p, kBtnIcon, 2.0f);
+                            btn.x + btn.w - p, btn.y + p, iconColor, 2.0f);
                 break;
             case ToolButton::Type::Freehand:
-                drawGdiLine(memDc, btn.x + 7.f, btn.y + 21.f, btn.x + 12.f, btn.y + 14.f, kBtnIcon, 2.0f);
-                drawGdiLine(memDc, btn.x + 12.f, btn.y + 14.f, btn.x + 18.f, btn.y + 19.f, kBtnIcon, 2.0f);
-                drawGdiLine(memDc, btn.x + 18.f, btn.y + 19.f, btn.x + 25.f, btn.y + 10.f, kBtnIcon, 2.0f);
+                drawGdiLine(memDc, btn.x + 7.f, btn.y + 21.f, btn.x + 12.f, btn.y + 14.f, iconColor, 2.0f);
+                drawGdiLine(memDc, btn.x + 12.f, btn.y + 14.f, btn.x + 18.f, btn.y + 19.f, iconColor, 2.0f);
+                drawGdiLine(memDc, btn.x + 18.f, btn.y + 19.f, btn.x + 25.f, btn.y + 10.f, iconColor, 2.0f);
                 break;
             case ToolButton::Type::LongScreenshot:
-                drawGdiLine(memDc, cx, btn.y + p, cx, btn.y + btn.h - p - 4, kBtnIcon, 2.0f);
-                drawGdiLine(memDc, cx, btn.y + btn.h - p, cx - 6, btn.y + btn.h - p - 6, kBtnIcon, 2.0f);
-                drawGdiLine(memDc, cx, btn.y + btn.h - p, cx + 6, btn.y + btn.h - p - 6, kBtnIcon, 2.0f);
+                drawGdiLine(memDc, cx, btn.y + p, cx, btn.y + btn.h - p - 4, iconColor, 2.0f);
+                drawGdiLine(memDc, cx, btn.y + btn.h - p, cx - 6, btn.y + btn.h - p - 6, iconColor, 2.0f);
+                drawGdiLine(memDc, cx, btn.y + btn.h - p, cx + 6, btn.y + btn.h - p - 6, iconColor, 2.0f);
                 break;
             case ToolButton::Type::Undo:
-                drawGdiLine(memDc, cx, btn.y + p, btn.x + p, cy, kBtnIcon, 2.0f);
-                drawGdiLine(memDc, btn.x + p, cy, cx, btn.y + btn.h - p, kBtnIcon, 2.0f);
+                drawGdiLine(memDc, cx, btn.y + p, btn.x + p, cy, iconColor, 2.0f);
+                drawGdiLine(memDc, btn.x + p, cy, cx, btn.y + btn.h - p, iconColor, 2.0f);
                 break;
             case ToolButton::Type::Save:
-                drawGdiRectOutline(memDc, btn.x + p, btn.y + p, btn.w - p * 2, btn.h - p * 2, kBtnIcon, 2.0f);
-                drawGdiRectFilled(memDc, cx - 4, btn.y + btn.h - p - 6, 8, 6, kBtnIcon);
+                drawGdiLine(memDc, cx, btn.y + p, cx, btn.y + btn.h - p - 7.f, iconColor, 2.0f);
+                drawGdiLine(memDc, cx, btn.y + btn.h - p, cx - 6.f, btn.y + btn.h - p - 6.f, iconColor, 2.0f);
+                drawGdiLine(memDc, cx, btn.y + btn.h - p, cx + 6.f, btn.y + btn.h - p - 6.f, iconColor, 2.0f);
+                drawGdiLine(memDc, btn.x + p + 2.f, btn.y + btn.h - p + 1.f,
+                            btn.x + btn.w - p - 2.f, btn.y + btn.h - p + 1.f,
+                            iconColor, 2.0f);
                 break;
             case ToolButton::Type::Copy:
-                drawGdiRectOutline(memDc, btn.x + p, btn.y + p, btn.w - p * 2 - 4, btn.h - p * 2 - 4, kBtnIcon, 1.5f);
-                drawGdiRectOutline(memDc, btn.x + p + 4, btn.y + p + 4, btn.w - p * 2 - 4, btn.h - p * 2 - 4, kBtnIcon, 1.5f);
+                drawGdiRectOutline(memDc, btn.x + p, btn.y + p, btn.w - p * 2 - 4, btn.h - p * 2 - 4, iconColor, 1.5f);
+                drawGdiRectOutline(memDc, btn.x + p + 4, btn.y + p + 4, btn.w - p * 2 - 4, btn.h - p * 2 - 4, iconColor, 1.5f);
                 break;
             case ToolButton::Type::Cancel:
-                drawGdiLine(memDc, btn.x + p, btn.y + p, btn.x + btn.w - p, btn.y + btn.h - p, kBtnIcon, 2.0f);
-                drawGdiLine(memDc, btn.x + btn.w - p, btn.y + p, btn.x + p, btn.y + btn.h - p, kBtnIcon, 2.0f);
+                drawGdiLine(memDc, btn.x + p, btn.y + p, btn.x + btn.w - p, btn.y + btn.h - p, iconColor, 2.0f);
+                drawGdiLine(memDc, btn.x + btn.w - p, btn.y + p, btn.x + p, btn.y + btn.h - p, iconColor, 2.0f);
+                break;
+            case ToolButton::Type::Confirm:
+                drawGdiLine(memDc, btn.x + p, cy + 1.f, cx - 2.f, btn.y + btn.h - p,
+                            iconColor, 2.4f);
+                drawGdiLine(memDc, cx - 2.f, btn.y + btn.h - p,
+                            btn.x + btn.w - p, btn.y + p,
+                            iconColor, 2.4f);
                 break;
             default:
                 break;
@@ -1783,6 +2058,10 @@ bool Application::captureLongScreenshot() {
         return false;
     }
 
+    longBackgroundPixels_ = capturedPixels_;
+    longBackgroundW_ = capturedW_;
+    longBackgroundH_ = capturedH_;
+
     platform_.eglContext->makeCurrent();
     if (capturedW_ > 0 && capturedH_ > 0 && !capturedPixels_.empty()) {
         if (longBackgroundTexture_ == 0) {
@@ -1806,6 +2085,7 @@ bool Application::captureLongScreenshot() {
     longStitcher_ = core::LongScreenshotStitcher(selected.w, stitchOptions);
     longStitcher_.start(firstFrame, selected.h);
 
+    capturedPixels_ = longStitcher_.pixels();
     capturedW_ = longStitcher_.width();
     capturedH_ = longStitcher_.height();
     isLongCaptureActive_ = true;
@@ -1922,6 +2202,7 @@ bool Application::appendLongScreenshotFrame() {
 
         capturedW_ = longStitcher_.width();
         capturedH_ = longStitcher_.height();
+        capturedPixels_ = longStitcher_.pixels();
         uploadScreenshotTextureFromPixels(longStitcher_.pixels(), capturedW_, capturedH_);
         stateMachine_.setSelectedRegion(fitLongPreviewRect(capturedW_, capturedH_));
         buildToolbar();
@@ -1931,12 +2212,14 @@ bool Application::appendLongScreenshotFrame() {
     std::vector<uint8_t> framePixels;
     int frameW = 0, frameH = 0;
 
-    platform_.overlay->hide();
-    platform_.overlay->pumpMessages();
-    const bool captured =
-        captureLongFramePixels(framePixels, frameW, frameH, longScreenshotSourceRegion_);
-    platform_.overlay->show();
-    platform_.overlay->pumpMessages();
+    bool captured = false;
+#ifdef _WIN32
+    captured = captureLongFramePixelsFromCoveredWindow(
+        framePixels, frameW, frameH, longScreenshotSourceRegion_);
+    if (!captured) {
+        std::fprintf(stderr, "[long] Covered-window capture failed; keeping overlay visible\n");
+    }
+#endif
 
     if (!captured) {
         std::fprintf(stderr, "[long] Failed to capture user-scrolled frame\n");
@@ -2041,6 +2324,9 @@ void Application::resetCaptureSession() {
     longNeedsTrailingFrameCapture_ = false;
     longScreenshotSourceRegion_ = {};
     longStitcher_.reset(0);
+    longBackgroundPixels_.clear();
+    longBackgroundW_ = 0;
+    longBackgroundH_ = 0;
     capturedPixels_.clear();
     capturedW_ = 0;
     capturedH_ = 0;

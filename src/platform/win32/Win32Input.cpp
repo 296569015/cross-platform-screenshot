@@ -56,28 +56,6 @@ HWND Win32Input::windowFromPointExcluding(Point screenPosition,
                                           HWND ignoredWindow) const {
     POINT pt = { screenPosition.x, screenPosition.y };
 
-    if (ignoredWindow) {
-        const LONG_PTR oldExStyle = GetWindowLongPtrW(ignoredWindow, GWL_EXSTYLE);
-        SetWindowLongPtrW(ignoredWindow, GWL_EXSTYLE,
-                          oldExStyle | WS_EX_TRANSPARENT);
-        SetWindowPos(ignoredWindow, nullptr, 0, 0, 0, 0,
-                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER |
-                     SWP_NOACTIVATE | SWP_FRAMECHANGED);
-
-        HWND passThroughTarget = WindowFromPoint(pt);
-
-        SetWindowLongPtrW(ignoredWindow, GWL_EXSTYLE, oldExStyle);
-        SetWindowPos(ignoredWindow, nullptr, 0, 0, 0, 0,
-                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER |
-                     SWP_NOACTIVATE | SWP_FRAMECHANGED);
-
-        if (passThroughTarget &&
-            passThroughTarget != ignoredWindow &&
-            GetAncestor(passThroughTarget, GA_ROOT) != ignoredWindow) {
-            return passThroughTarget;
-        }
-    }
-
     for (HWND hwnd = GetTopWindow(nullptr); hwnd; hwnd = GetWindow(hwnd, GW_HWNDNEXT)) {
         if (hwnd == ignoredWindow || GetAncestor(hwnd, GA_ROOT) == ignoredWindow) {
             continue;
