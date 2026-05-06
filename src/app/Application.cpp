@@ -29,6 +29,10 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+#include <objidl.h>
+#include <propidl.h>
+#include <gdiplus.h>
+#pragma comment(lib, "gdiplus.lib")
 #ifndef PW_RENDERFULLCONTENT
 #define PW_RENDERFULLCONTENT 0x00000002
 #endif
@@ -88,6 +92,51 @@ COLORREF colorRef(platform::Color color) {
     return RGB(colorByte(color.r), colorByte(color.g), colorByte(color.b));
 }
 
+Gdiplus::Color gdiplusColor(platform::Color color) {
+    return Gdiplus::Color(colorByte(color.a),
+                          colorByte(color.r),
+                          colorByte(color.g),
+                          colorByte(color.b));
+}
+
+void ensureGdiplusStarted() {
+    static ULONG_PTR token = 0;
+    static bool attempted = false;
+    if (attempted) {
+        return;
+    }
+    attempted = true;
+
+    Gdiplus::GdiplusStartupInput input;
+    if (Gdiplus::GdiplusStartup(&token, &input, nullptr) != Gdiplus::Ok) {
+        token = 0;
+    }
+}
+
+void appendFreehandPoint(std::vector<platform::PointF>& points, float x, float y) {
+    static constexpr float kMinDistancePx = 0.35f;
+    static constexpr float kInterpolateStepPx = 0.75f;
+
+    if (points.empty()) {
+        points.push_back({ x, y });
+        return;
+    }
+
+    const auto last = points.back();
+    const float dx = x - last.x;
+    const float dy = y - last.y;
+    const float distance = std::sqrt(dx * dx + dy * dy);
+    if (distance < kMinDistancePx) {
+        return;
+    }
+
+    const int steps = std::max(1, static_cast<int>(std::floor(distance / kInterpolateStepPx)));
+    for (int i = 1; i <= steps; ++i) {
+        const float t = static_cast<float>(i) / static_cast<float>(steps);
+        points.push_back({ last.x + dx * t, last.y + dy * t });
+    }
+}
+
 void blendRect(std::vector<uint8_t>& bgra,
                int width,
                int height,
@@ -132,14 +181,42 @@ void drawGdiLine(HDC dc,
                  float y1,
                  platform::Color color,
                  float thickness) {
-    HPEN pen = CreatePen(PS_SOLID,
-                         std::max(1, static_cast<int>(std::round(thickness))),
-                         colorRef(color));
-    HGDIOBJ oldPen = SelectObject(dc, pen);
-    MoveToEx(dc, static_cast<int>(std::round(x0)), static_cast<int>(std::round(y0)), nullptr);
-    LineTo(dc, static_cast<int>(std::round(x1)), static_cast<int>(std::round(y1)));
-    SelectObject(dc, oldPen);
-    DeleteObject(pen);
+    ensureGdiplusStarted();
+    Gdiplus::Graphics graphics(dc);
+    graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+    graphics.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
+
+    Gdiplus::Pen pen(gdiplusColor(color), std::max(1.0f, thickness));
+    pen.SetStartCap(Gdiplus::LineCapRound);
+    pen.SetEndCap(Gdiplus::LineCapRound);
+    pen.SetLineJoin(Gdiplus::LineJoinRound);
+    graphics.DrawLine(&pen, x0, y0, x1, y1);
+}
+
+void drawGdiPolyline(HDC dc,
+                     const std::vector<platform::PointF>& points,
+                     platform::Color color,
+                     float thickness) {
+    if (points.size() < 2) {
+        return;
+    }
+
+    ensureGdiplusStarted();
+    Gdiplus::Graphics graphics(dc);
+    graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+    graphics.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
+
+    Gdiplus::Pen pen(gdiplusColor(color), std::max(1.0f, thickness));
+    pen.SetStartCap(Gdiplus::LineCapRound);
+    pen.SetEndCap(Gdiplus::LineCapRound);
+    pen.SetLineJoin(Gdiplus::LineJoinRound);
+
+    std::vector<Gdiplus::PointF> gdipPoints;
+    gdipPoints.reserve(points.size());
+    for (const auto& point : points) {
+        gdipPoints.emplace_back(point.x, point.y);
+    }
+    graphics.DrawLines(&pen, gdipPoints.data(), static_cast<INT>(gdipPoints.size()));
 }
 
 void drawGdiRectOutline(HDC dc,
@@ -986,24 +1063,14 @@ void Application::startAnnotation(float x, float y) {
     annCurrX_ = x;  annCurrY_ = y;
     activeFreehandPoints_.clear();
     if (activeTool_ == core::AnnotationTool::Freehand) {
-        activeFreehandPoints_.push_back({ x, y });
+        appendFreehandPoint(activeFreehandPoints_, x, y);
     }
 }
 
 void Application::updateAnnotation(float x, float y) {
     annCurrX_ = x; annCurrY_ = y;
     if (activeTool_ == core::AnnotationTool::Freehand) {
-        if (activeFreehandPoints_.empty()) {
-            activeFreehandPoints_.push_back({ x, y });
-            return;
-        }
-
-        const auto& last = activeFreehandPoints_.back();
-        const float dx = x - last.x;
-        const float dy = y - last.y;
-        if ((dx * dx + dy * dy) >= 1.0f) {
-            activeFreehandPoints_.push_back({ x, y });
-        }
+        appendFreehandPoint(activeFreehandPoints_, x, y);
     }
 }
 
@@ -1045,13 +1112,9 @@ void Application::finishAnnotation(float x, float y) {
         break;
     case core::AnnotationTool::Freehand: {
         if (activeFreehandPoints_.empty()) {
-            activeFreehandPoints_.push_back({ annStartX_, annStartY_ });
+            appendFreehandPoint(activeFreehandPoints_, annStartX_, annStartY_);
         }
-        const auto& last = activeFreehandPoints_.back();
-        if (std::abs(last.x - annCurrX_) >= 0.5f ||
-            std::abs(last.y - annCurrY_) >= 0.5f) {
-            activeFreehandPoints_.push_back({ annCurrX_, annCurrY_ });
-        }
+        appendFreehandPoint(activeFreehandPoints_, annCurrX_, annCurrY_);
         if (activeFreehandPoints_.size() < 2) {
             activeFreehandPoints_.clear();
             return;
@@ -1322,12 +1385,7 @@ void Application::renderSoftwareOverlay() {
                     drawGdiLine(memDc, a.start.x, a.start.y, a.end.x, a.end.y,
                                 a.color, a.thickness);
                 } else if constexpr (std::is_same_v<T, core::FreehandAnnotation>) {
-                    for (size_t i = 1; i < a.points.size(); ++i) {
-                        drawGdiLine(memDc,
-                                    a.points[i - 1].x, a.points[i - 1].y,
-                                    a.points[i].x, a.points[i].y,
-                                    a.color, a.thickness);
-                    }
+                    drawGdiPolyline(memDc, a.points, a.color, a.thickness);
                 }
             }, ann);
         };
@@ -1356,12 +1414,8 @@ void Application::renderSoftwareOverlay() {
                             annotationColor_, annotationThickness_);
                 break;
             case core::AnnotationTool::Freehand:
-                for (size_t i = 1; i < activeFreehandPoints_.size(); ++i) {
-                    drawGdiLine(memDc,
-                                activeFreehandPoints_[i - 1].x, activeFreehandPoints_[i - 1].y,
-                                activeFreehandPoints_[i].x, activeFreehandPoints_[i].y,
+                drawGdiPolyline(memDc, activeFreehandPoints_,
                                 annotationColor_, annotationThickness_);
-                }
                 break;
             default:
                 break;

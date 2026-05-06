@@ -156,15 +156,6 @@ LRESULT Win32Overlay::handleMessage(UINT msg, WPARAM wp, LPARAM lp) {
     case WM_MOUSEMOVE: {
         if (!mouseCallback_) break;
 
-        // Coalesce mouse moves: skip if there's another WM_MOUSEMOVE queued
-        MSG peekMsg;
-        while (PeekMessage(&peekMsg, hwnd_, WM_MOUSEMOVE, WM_MOUSEMOVE, PM_NOREMOVE)) {
-            // There's a newer move — consume it and use its position instead
-            PeekMessage(&peekMsg, hwnd_, WM_MOUSEMOVE, WM_MOUSEMOVE, PM_REMOVE);
-            lp = peekMsg.lParam;
-            wp = peekMsg.wParam;
-        }
-
         MouseEvent evt;
         evt.position.x = GET_X_LPARAM(lp);
         evt.position.y = GET_Y_LPARAM(lp);
