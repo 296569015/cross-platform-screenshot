@@ -16,9 +16,7 @@ Thumbs.db
 Desktop.ini
 .DS_Store
 
-# ANGLE pre-built binaries (download separately, not in git)
-third_party/angle/bin/
-third_party/angle/lib/
+# ANGLE pre-built binaries are tracked so fresh Windows clones can build.
 
 # Cat Cafe / AI tooling
 .cat-cafe/
