@@ -22,6 +22,12 @@ public:
 
     /// Must be called in the message-pump thread to dispatch hotkey events.
     virtual void pollHotkeys() = 0;
+
+    /// Scroll at a screen-space point. Positive wheelDelta scrolls up,
+    /// negative wheelDelta scrolls down. One wheel notch is 120.
+    virtual bool scrollAt(Point screenPosition,
+                          int wheelDelta,
+                          void* ignoredWindow = nullptr) = 0;
 };
 
 } // namespace sst::platform

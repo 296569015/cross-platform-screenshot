@@ -5,9 +5,11 @@
 #include <core/AnnotationModel.h>
 #include <core/CommandHistory.h>
 #include <core/Types.h>
+#include <core/LongScreenshotStitcher.h>
 #include <renderer/SpriteBatch.h>
 #include <renderer/ShapeRenderer.h>
 #include <renderer/Framebuffer.h>
+#include <chrono>
 #include <cstdint>
 
 namespace sst::app {
@@ -15,7 +17,18 @@ namespace sst::app {
 /// Toolbar button definition
 struct ToolButton {
     float x, y, w, h;
-    enum class Type { Rectangle, Arrow, Line, Undo, Save, Copy, Cancel } type;
+    enum class Type {
+        Rectangle,
+        Arrow,
+        Line,
+        LongScreenshot,
+        Edit,
+        Undo,
+        Save,
+        Copy,
+        Cancel,
+        Confirm
+    } type;
     bool isHovered = false;
 };
 
@@ -37,6 +50,22 @@ private:
 
     // Phase 1: Capture and display
     bool captureScreen();
+    bool captureFramePixels(std::vector<uint8_t>& outPixels, int& outW, int& outH,
+                            uint32_t timeoutMs = 500);
+    bool captureLongFramePixels(std::vector<uint8_t>& outPixels,
+                                int& outW,
+                                int& outH,
+                                platform::Rect region);
+#ifdef _WIN32
+    bool captureFramePixelsGdi(std::vector<uint8_t>& outPixels,
+                               int& outW,
+                               int& outH,
+                               platform::Rect region);
+#endif
+    bool uploadScreenshotTexture();
+    bool uploadScreenshotTextureFromPixels(const std::vector<uint8_t>& pixels,
+                                           int width,
+                                           int height);
 
     // Phase 2: Region selection
     void renderDimMask(float selX, float selY, float selW, float selH);
@@ -44,6 +73,8 @@ private:
     // Phase 3+4: Toolbar and annotations
     void buildToolbar();
     void renderToolbar();
+    void renderLongScreenshotUi();
+    void renderLongScreenshotToolbar();
     void renderAnnotations();
     bool hitTestToolbar(float mx, float my);
     void onToolbarClick(ToolButton::Type type);
@@ -57,6 +88,20 @@ private:
     bool saveToClipboard();
     bool saveToFile();
     std::vector<uint8_t> renderSelectionToPixels();
+    std::vector<uint8_t> cropPixels(const std::vector<uint8_t>& source,
+                                    int sourceW, int sourceH,
+                                    platform::Rect region) const;
+    int trimTrailingCaptureDropout(std::vector<uint8_t>& pixels,
+                                   int width,
+                                   int height) const;
+    bool captureLongScreenshot();
+    void handleLongScreenshotScroll(float scrollDelta, platform::Point cursorPosition);
+    bool appendLongScreenshotFrame();
+    void finishLongScreenshotMode();
+    void runPendingActions();
+    platform::Rect fitLongPreviewRect(int imageW, int imageH) const;
+    bool ensureLongHintTexture();
+    void resetCaptureSession();
 
     platform::PlatformServices platform_;
 
@@ -68,7 +113,12 @@ private:
     renderer::ShapeRenderer shapeRenderer_;
 
     uint32_t screenshotTexture_ = 0;
+    uint32_t longBackgroundTexture_ = 0;
+    uint32_t longHintTextTexture_ = 0;
+    int longHintTextW_ = 0;
+    int longHintTextH_ = 0;
     platform::Size screenSize_;
+    platform::Rect screenBounds_;
 
     // Selection drag state
     bool   isDragging_  = false;
@@ -93,6 +143,16 @@ private:
     // Pixel data for save (stored after capture for reuse)
     std::vector<uint8_t> capturedPixels_;
     int capturedW_ = 0, capturedH_ = 0;
+    bool isLongScreenshotResult_ = false;
+    bool isLongCaptureActive_ = false;
+    bool pendingLongScreenshot_ = false;
+    bool pendingLongFrameCapture_ = false;
+    bool longNeedsTrailingFrameCapture_ = false;
+    std::chrono::steady_clock::time_point longFrameCaptureDue_;
+    std::chrono::steady_clock::time_point longTrailingFrameCaptureDue_;
+    std::chrono::steady_clock::time_point longLastFrameCapture_;
+    platform::Rect longScreenshotSourceRegion_;
+    core::LongScreenshotStitcher longStitcher_;
 
     bool running_ = false;
 };
